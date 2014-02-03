@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Addon Author="Caleb" APIVersion="4" Name="MoO" Description="An addon to help set up interrupt rotations to maximize your groups Moment of Opportunity uptime.">
+    <Script Name="MoO.lua"/>
+    <Form Name="MoO.xml"/>
+</Addon>
