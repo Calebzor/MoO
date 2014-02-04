@@ -6,8 +6,11 @@
 --[[-------------------------------------------------------------------------------------------
 TODO:
 	let others know when someone in the group changes LAS in a way that he/she looses/gains an interrupt ability
-	hook into bossmods
+
 	ability to save and load group setups
+	have a one button setup for like 5 man dungeons
+
+	hook into bossmods
 ]]---------------------------------------------------------------------------------------------
 
 require "ActionSetLib"
@@ -110,6 +113,9 @@ function addon:DelayedInit()
 	self.uPlayer = GameLib.GetPlayerUnit()
 	self.tCurrLAS = ActionSetLib.GetCurrentActionSet() -- this should be only done on LAS update
 	testmoo()
+	if not self.uPlayer then
+		Apollo.CreateTimer("DelayedInit", 1, false)
+	end
 end
 
 local function getFirstIndexOfIndexedTablqe(t)
@@ -142,19 +148,19 @@ function testmoo()
 	addon:AddGroup("Group1", "RaidSlinger", 46160, 20)
 	addon:AddGroup("Group1", "RaidSlinger", 34355, 30)
 
-	addon:AddGroup("Group2", "Caleb", 32812, 35)
-	addon:AddGroup("Group2", "RaidSlinger", 46160, 20)
-	addon:AddGroup("Group2", "RaidSlinger", 34355, 30)
-
-
-	addon:AddGroup("Group3", "Caleb", 32812, 35)
-	addon:AddGroup("Group3", "RaidSlinger", 46160, 20)
-	addon:AddGroup("Group3", "RaidSlinger", 34355, 30)
-
-
-	addon:AddGroup("Group4", "Caleb", 32812, 35)
-	addon:AddGroup("Group4", "RaidSlinger", 46160, 20)
-	addon:AddGroup("Group4", "RaidSlinger", 34355, 30)
+	--addon:AddGroup("Group2", "Caleb", 32812, 35)
+	--addon:AddGroup("Group2", "RaidSlinger", 46160, 20)
+	--addon:AddGroup("Group2", "RaidSlinger", 34355, 30)
+    --
+    --
+	--addon:AddGroup("Group3", "Caleb", 32812, 35)
+	--addon:AddGroup("Group3", "RaidSlinger", 46160, 20)
+	--addon:AddGroup("Group3", "RaidSlinger", 34355, 30)
+    --
+    --
+	--addon:AddGroup("Group4", "Caleb", 32812, 35)
+	--addon:AddGroup("Group4", "RaidSlinger", 46160, 20)
+	--addon:AddGroup("Group4", "RaidSlinger", 34355, 30)
 
 	--addon:AddGroup("Group1", "ASDASF", 46160, 20)
 	--addon:AddBarToMemberInGroup("Group1", "ASDASF", 34355)
@@ -191,7 +197,7 @@ end
 function addon:AddMemberToGroup(sGroupName, sMemberName)
 	for k, v in pairs(self.tGroups[sGroupName].BarContainers) do
 		if v.name and v.name == sMemberName then
-			return
+			return -- names inside a bar have to be unique, hopefully cross server names won't mess this up
 		end
 	end
 	local nNumOfMembers = #self.tGroups[sGroupName].BarContainers+1
@@ -211,6 +217,11 @@ end
 function addon:AddBarToMemberInGroup(sGroupName, sMemberName, nSpellId, nMax)
 	local nMemberIndexInGroup = getMemberOfGroupIndex(sGroupName, sMemberName)
 	if nMemberIndexInGroup then
+		for k, v in pairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
+			if v.nSpellId and v.nSpellId == nSpellId then
+				return -- abilities have to be unique
+			end
+		end
 		local nNumOfBars = #self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars+1
 		self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars] = {}
 		self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars].frame = Apollo.LoadForm("MoO.xml", "Bar", self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].frame, self)
@@ -266,13 +277,15 @@ function addon:RedrawGroup(sGroupName)
 	end
 end
 
-function addon:OnGroupResize(wndHandler, wndControl)
-	self:RedrawGroup(wndControl:GetData().sGroupName)
+function addon:OnGroupResize(wHandler, wControl)
+	if wControl:GetData() and wControl:GetData().sGroupName then
+		self:RedrawGroup(wControl:GetData().sGroupName)
+	end
 end
 
-function addon:ShiftMember(wndHandler, wndControl)
-	local direction = wndControl:GetName():find("Up") and true
-	local sGroupName, sMemberName = wndControl:GetParent():GetData().sGroupName, wndControl:GetParent():GetData().sMemberName
+function addon:ShiftMember(wHandler, wControl)
+	local direction = wControl:GetName():find("Up") and true
+	local sGroupName, sMemberName = wControl:GetParent():GetData().sGroupName, wControl:GetParent():GetData().sMemberName
 	local nControlIndex = getMemberOfGroupIndex(sGroupName, sMemberName)
 
 	local tTemp = {}
@@ -295,12 +308,12 @@ function addon:ShiftMember(wndHandler, wndControl)
 	addon:ShowShiftButtons(true)
 end
 
-function addon:OnEditBoxChanging(wndHandler, wndControl, input)
-	self.wOptions:FindChild("AddGroupEditBox"):SetTextColor(tColor.orange)
+function addon:OnEditBoxChanged(wHandler, wControl, input)
+	wControl:SetTextColor(tColor.orange)
 end
 
 function addon:AddGroupButton()
-	local wEditbox = self.wOptions:FindChild("AddGroupEditBox")
+	local wEditbox = self.wOptions:FindChild("GroupCreatorContainer"):FindChild("AddGroupEditBox")
 	local sNewGroupName = wEditbox:GetText()
 	if self.tGroups[sNewGroupName] then -- group already exists
 		wEditbox:SetText("") -- clear the text box
@@ -310,6 +323,48 @@ function addon:AddGroupButton()
 	else
 		if wEditbox:GetText() ~= "That group name is already in use." then
 			self:NewGroup(sNewGroupName)
+			wEditbox:SetTextColor(tColor.green)
+		end
+	end
+end
+
+function addon:CopyGroupButton()
+	local wEditbox = self.wOptions:FindChild("GroupCopyContainer"):FindChild("AddGroupEditBox")
+	local sNewGroupName = wEditbox:GetText()
+	if self.tGroups[sNewGroupName] then -- group already exists
+		wEditbox:SetText("") -- clear the text box
+		wEditbox:InsertText("That group name is already in use.") -- add in text, this way it is not hightlighted so red text color is readable
+		wEditbox:SetTextColor(tColor.red)
+		wEditbox:SetFocus()
+	else
+		if wEditbox:GetText() ~= "That group name is already in use." then
+			local sSourceGroupName = self.wOptions:FindChild("GroupCopyContainer"):FindChild("CopyGroupSelectorContainer"):FindChild("DropDownWidget"):FindChild("MainButton"):GetText()
+			if sSourceGroupName == "No groups added yet" then return end -- retard check
+			self:NewGroup(sNewGroupName)
+			for nMemberIndexInGroup, tMemberData in ipairs(self.tGroups[sSourceGroupName].BarContainers) do
+				local nNumOfMembers = #self.tGroups[sNewGroupName].BarContainers+1
+				self.tGroups[sNewGroupName].BarContainers[nNumOfMembers] = {}
+				self.tGroups[sNewGroupName].BarContainers[nNumOfMembers].bars = {}
+				self.tGroups[sNewGroupName].BarContainers[nNumOfMembers].frame = Apollo.LoadForm("MoO.xml", "BarContainer", self.tGroups[sNewGroupName].GroupContainer, self)
+				self.tGroups[sNewGroupName].BarContainers[nNumOfMembers].frame:SetData({sGroupName = sNewGroupName, sMemberName = tMemberData.name})
+				self.tGroups[sNewGroupName].BarContainers[nNumOfMembers].frame:FindChild("Text"):SetText(tMemberData.name)
+				self.tGroups[sNewGroupName].BarContainers[nNumOfMembers].name = tMemberData.name
+				for nBarIndex, tBar in pairs(self.tGroups[sSourceGroupName].BarContainers[nMemberIndexInGroup].bars) do
+					local nNumOfBars = #self.tGroups[sNewGroupName].BarContainers[nMemberIndexInGroup].bars+1
+					self.tGroups[sNewGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars] = {}
+					self.tGroups[sNewGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars].frame = Apollo.LoadForm("MoO.xml", "Bar", self.tGroups[sNewGroupName].BarContainers[nMemberIndexInGroup].frame, self)
+
+					--self.tGroups[sNewGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars].frame:SetBarColor(hexToCColor("EEEEEE", 0.5))    -- XXX fix these colors
+					--self.tGroups[sNewGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars].frame:SetBGColor(hexToCColor("FFFFFF", 0.5))     -- XXX fix these colors
+
+					self.tGroups[sNewGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars].nSpellId = tBar.nSpellId -- this can be a spellId or just a text
+					self.tGroups[sNewGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars].nMax = tBar.nMax
+					self.tGroups[sNewGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars].frame:SetMax(tBar.nMax)
+
+					self:FitBarsToMember(sNewGroupName, tMemberData.name)
+				end
+			end
+			self:RedrawGroup(sNewGroupName)
 			wEditbox:SetTextColor(tColor.green)
 		end
 	end
@@ -328,6 +383,7 @@ function addon:Options()
 	if not self.wOptions then self.wOptions = Apollo.LoadForm("MoO.xml", "OptionsContainer", nil, self) end
 
 	Apollo.LoadForm("MoO.xml", "DropDownWidget", self.wOptions:FindChild("DeleteGroupSelectorContainer"), self)
+	Apollo.LoadForm("MoO.xml", "DropDownWidget", self.wOptions:FindChild("CopyGroupSelectorContainer"), self)
 end
 
 function addon:OnSlashCommand(_, input)
@@ -390,7 +446,7 @@ function addon:OnOneSecTimer()
 	for sGroupName, tGroupData in pairs(self.tGroups) do
 		for nMemberIndexInGroup, tMemberData in pairs(self.tGroups[sGroupName].BarContainers) do
 			for nBarIndex, tBar in pairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
-				if tMemberData.name == self.uPlayer:GetName() then
+				if self.uPlayer and tMemberData.name == self.uPlayer:GetName() then
 					local spellObject = GameLib.GetSpell(tBar.nSpellId)
 					local nCD, nRemainingCD = spellObject:GetCooldownTime(), spellObject:GetCooldownRemaining()
 					if nRemainingCD and nRemainingCD > 0 then
@@ -417,7 +473,7 @@ function addon:BarUpdater()
 
 				-- for certain abilities just starting a timer is not good enough because there are AMPs for example that make the cooldown complete faster
 
-				if tMemberData.name == self.uPlayer:GetName() then
+				if self.uPlayer and tMemberData.name == self.uPlayer:GetName() then
 					--for index, nAbilityId in pairs(self.tCurrLAS) do
 						--self.wAbility:SetAbilityId(nAbilityId)
 						--if nAbilityId and nAbilityId > 0 then -- only check non empty slots
