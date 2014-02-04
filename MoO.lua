@@ -93,9 +93,9 @@ function addon:OnLoad()
 
 	self.wAbility = Apollo.LoadForm("MoO.xml", "TempAbilityWindow", nil, self)
 
-	Apollo.CreateTimer("UpdateBarTimer", self.nBarTimeIncrement, true)
-	Apollo.StartTimer("UpdateBarTimer")
-	Apollo.RegisterTimerHandler("UpdateBarTimer", "BarUpdater", self)
+	--Apollo.CreateTimer("UpdateBarTimer", self.nBarTimeIncrement, true)
+	--Apollo.StartTimer("UpdateBarTimer")
+	--Apollo.RegisterTimerHandler("UpdateBarTimer", "BarUpdater", self)
 	Apollo.RegisterTimerHandler("OneSecTimer", "OnOneSecTimer", self)
 
 	Apollo.RegisterTimerHandler("DelayedInit", "DelayedInit", self)
@@ -445,18 +445,20 @@ end
 function addon:OnOneSecTimer()
 	for sGroupName, tGroupData in pairs(self.tGroups) do
 		for nMemberIndexInGroup, tMemberData in pairs(self.tGroups[sGroupName].BarContainers) do
-			for nBarIndex, tBar in pairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
-				if self.uPlayer and tMemberData.name == self.uPlayer:GetName() then
+			if self.uPlayer and tMemberData.name == self.uPlayer:GetName() then
+				local tBarData = {}
+				for nBarIndex, tBar in ipairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
 					local spellObject = GameLib.GetSpell(tBar.nSpellId)
 					local nCD, nRemainingCD = spellObject:GetCooldownTime(), spellObject:GetCooldownRemaining()
 					if nRemainingCD and nRemainingCD > 0 then
 						tBar.frame:SetProgress(nRemainingCD)
-						self:SendCommMessage({type = "barupdate", sGroupName = sGroupName, nMemberIndexInGroup = nMemberIndexInGroup, nBarIndex = nBarIndex, nProgress = nRemainingCD})
+						tBarData[nBarIndex] = {sGroupName = sGroupName, sMemberName = tMemberData.name, nBarIndex = nBarIndex, nProgress = nRemainingCD}
 					else
 						tBar.frame:SetProgress(nCD)
-						self:SendCommMessage({type = "barupdate", sGroupName = sGroupName, nMemberIndexInGroup = nMemberIndexInGroup, nBarIndex = nBarIndex, nProgress = nCD})
+						tBarData[nBarIndex] = {sGroupName = sGroupName, sMemberName = tMemberData.name, nBarIndex = nBarIndex, nProgress = nCD}
 					end
 				end
+				self:SendCommMessage({type = "barupdate", tBarData = tBarData,}) -- use a single message to transmit all player bar data
 			end
 		end
 	end
@@ -543,8 +545,11 @@ function addon:OnCommMessage(channel, tMsg)
 
 	--D(tMsg)
 	if tMsg.type == "barupdate" then
-		if self.tGroups[tMsg.sGroupName] and self.tGroups[tMsg.sGroupName].BarContainers[tMsg.nMemberIndexInGroup] and self.tGroups[tMsg.sGroupName].BarContainers[tMsg.nMemberIndexInGroup].bars[tMsg.nBarIndex] then
-			self.tGroups[tMsg.sGroupName].BarContainers[tMsg.nMemberIndexInGroup].bars[tMsg.nBarIndex].frame:SetProgress(tMsg.nProgress)
+		for nBarIndex, tBarData in ipairs(tMsg.tBarData) do
+			local nMemberIndexInGroup = getMemberOfGroupIndex(tBarData.sGroupName, tBarData.sMemberName)
+			if self.tGroups[tBarData.sGroupName] and self.tGroups[tBarData.sGroupName].BarContainers[nMemberIndexInGroup] and self.tGroups[tBarData.sGroupName].BarContainers[nMemberIndexInGroup].bars[tBarData.nBarIndex] then
+				self.tGroups[tBarData.sGroupName].BarContainers[nMemberIndexInGroup].bars[tBarData.nBarIndex].frame:SetProgress(tBarData.nProgress)
+			end
 		end
 	end
 	--self:UpdateSpell(tMsg)
