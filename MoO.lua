@@ -9,6 +9,7 @@ TODO:
 
 	ability to save and load group setups
 	have a one button setup for like 5 man dungeons
+	only show my group option
 
 	hook into bossmods
 ]]---------------------------------------------------------------------------------------------
@@ -18,6 +19,7 @@ require "GameLib"
 require "GroupLib"
 require "ICCommLib"
 require "CColor"
+require "AbilityBook"
 
 local setmetatable = setmetatable
 local pairs = pairs
@@ -31,6 +33,7 @@ local ActionSetLib = ActionSetLib
 local GameLib = GameLib
 local GroupLib = GroupLib
 local ICCommLib = ICCommLib
+local AbilityBook = AbilityBook
 local CColor = CColor
 local _ = _
 
@@ -68,10 +71,10 @@ function addon:new(o)
 	self.nBarTimeIncrement = 0.033
 	self.tGroups = {}
 	self.tCurrLAS = nil
-	self.wAbility = nil
 	self.uPlayer = nil
 	self.sChannelName = nil
-
+	self.tPartyLASInterrupts = {}
+	self.bAllGroupsLocked = nil
 
 	return o
 end
@@ -91,7 +94,7 @@ function addon:OnLoad()
 	Apollo.RegisterEventHandler("Group_Left", "OnGroupLeft", self)
 	Apollo.RegisterEventHandler("Group_Updated", "OnGroupUpdated", self)
 
-	self.wAbility = Apollo.LoadForm("MoO.xml", "TempAbilityWindow", nil, self)
+	--self.wAbility = Apollo.LoadForm("MoO.xml", "TempAbilityWindow", nil, self)
 
 	--Apollo.CreateTimer("UpdateBarTimer", self.nBarTimeIncrement, true)
 	--Apollo.StartTimer("UpdateBarTimer")
@@ -111,7 +114,7 @@ end
 
 function addon:DelayedInit()
 	self.uPlayer = GameLib.GetPlayerUnit()
-	self.tCurrLAS = ActionSetLib.GetCurrentActionSet() -- this should be only done on LAS update
+--	self.tCurrLAS = ActionSetLib.GetCurrentActionSet() -- this should be only done on LAS change
 	testmoo()
 	if not self.uPlayer then
 		Apollo.CreateTimer("DelayedInit", 1, false)
@@ -166,15 +169,41 @@ function testmoo()
 	--addon:AddBarToMemberInGroup("Group1", "ASDASF", 34355)
 	--addon:StartBar("Group1", "ASDASF", 46160, addon.nTimer)
 
+	--addon:RequestPartyLASInterrupts()
 
-	addon:ShowShiftButtons(true)
+	addon:ShowMemberButtons(nil, true, true)
 end
 
-function addon:ShowShiftButtons(bShow)
+function addon:OnLockGroupButton(wHandler)
+	if wHandler:GetName() == "LockUnlockAllGroupsButton" then
+		for _, v in pairs(self.tGroups) do
+			v.GroupContainer:GetData().bLocked = self.bAllGroupsLocked
+			v.GroupContainer:FindChild("GroupConfigContainer"):Show(not self.bAllGroupsLocked)
+			v.GroupContainer:SetStyle("Moveable", not v.GroupContainer:GetData().bLocked)
+			v.GroupContainer:SetStyle("Sizable", not v.GroupContainer:GetData().bLocked)
+		end
+		self:ShowMemberButtons(nil, not self.bAllGroupsLocked, true)
+		self.bAllGroupsLocked = not self.bAllGroupsLocked
+		wHandler:SetText(self.bAllGroupsLocked and "Lock all groups" or "Unlock all groups")
+	else
+		local wGroupContainer = wHandler:GetParent():GetParent()
+		local tData = wGroupContainer:GetData()
+		self:ShowMemberButtons(tData.sGroupName, tData.bLocked)
+		wHandler:GetParent():Show(tData.bLocked)
+		wGroupContainer:SetStyle("Moveable", tData.bLocked)
+		wGroupContainer:SetStyle("Sizable", tData.bLocked)
+		tData.bLocked = not tData.bLocked
+	end
+end
+
+function addon:ShowMemberButtons(sTheActualGroupsName, bShow, bAllGroups)
 	for sGroupName, _ in pairs(self.tGroups) do
-		for indexOfMember, _ in ipairs(self.tGroups[sGroupName].BarContainers) do
-			self.tGroups[sGroupName].BarContainers[indexOfMember].frame:FindChild("ShiftUp"):Show(indexOfMember ~= 1 and bShow or false)
-			self.tGroups[sGroupName].BarContainers[indexOfMember].frame:FindChild("ShiftDown"):Show(indexOfMember ~= #self.tGroups[sGroupName].BarContainers and bShow or false)
+		if sGroupName == sTheActualGroupsName or bAllGroups then
+			for indexOfMember, BarContainers in ipairs(self.tGroups[sGroupName].BarContainers) do
+				BarContainers.frame:FindChild("EditMember"):Show(bShow)
+				BarContainers.frame:FindChild("ShiftUp"):Show(indexOfMember ~= 1 and bShow or false)
+				BarContainers.frame:FindChild("ShiftDown"):Show(indexOfMember ~= #self.tGroups[sGroupName].BarContainers and bShow or false)
+			end
 		end
 	end
 end
@@ -187,10 +216,11 @@ function addon:AddGroup(sGroupName, sMemberName, name, nMax)
 
 end
 
-function addon:NewGroup(sGroupName)
+function addon:NewGroup(sGroupName, bLocked)
 	if self.tGroups[sGroupName] then return end -- that group already exists
 	self.tGroups[sGroupName] = {}
 	self.tGroups[sGroupName].GroupContainer = Apollo.LoadForm("MoO.xml", "GroupContainer", nil, self)
+	self.tGroups[sGroupName].GroupContainer:SetData({sGroupName = sGroupName, bLocked = bLocked})
 	self.tGroups[sGroupName].BarContainers = {}
 end
 
@@ -305,7 +335,7 @@ function addon:ShiftMember(wHandler, wControl)
 		end
 	end
 	addon:RedrawGroup(sGroupName)
-	addon:ShowShiftButtons(true)
+	addon:ShowMemberButtons(sGroupName, true)
 end
 
 function addon:OnEditBoxChanged(wHandler, wControl, input)
@@ -393,6 +423,81 @@ function addon:OnSlashCommand(_, input)
 		end
 	end
 	--testmoo()
+end
+
+-----------------------------------------------------------------------------------------------
+-- Party LAS Interrupts
+-----------------------------------------------------------------------------------------------
+
+-- don't forget to add the interrupt armour remover gadgets to the list too
+-- these are AbilityIds not spellIds!
+local tInterrupts = {
+	-- Spellslinger
+	[20325] = true, -- Gate
+	[30160] = true, -- Arcane Shock
+	[16454] = true, -- Spatial Shift
+	-- Esper
+	[19022] = true, -- Crush
+	[19029] = true, -- Shockwave
+	[19355] = true, -- Incapacitate
+
+}
+
+-- so basically nAbilityId is just the nId from the last tier of a spell in the ability book AbilityBook.GetAbilitiesList()[nAbilityIndex].tTiers[#AbilityBook.GetAbilitiesList()[nAbilityIndex].tTiers].nId
+
+function getAbilityIdFromAbilityName(sAbilityName)
+	for nAbilityIndex, tData in pairs(AbilityBook.GetAbilitiesList()) do
+		if AbilityBook.GetAbilitiesList()[nAbilityIndex].tTiers[1].strName == sAbilityName then
+			return AbilityBook.GetAbilitiesList()[nAbilityIndex].tTiers[#AbilityBook.GetAbilitiesList()[nAbilityIndex].tTiers].nId
+		end
+	end
+	return "not found"
+end
+
+-- utility function that gets the spellId from abilityId
+function addon:GetTieredSpellIdFromLasAbilityId(nAbilityId)
+	-- this only works for abilities the player can cast
+	local wAbility = Apollo.LoadForm("MoO.xml", "TempAbilityWindow", nil, self)
+	wAbility:SetAbilityId(nAbilityId)
+	local sSpellId = wAbility:GetAbilityTierId()
+	wAbility:Destroy()
+	return sSpellId
+end
+
+function addon:RequestPartyLASInterrupts()
+	self.tPartyLASInterrupts = {} -- wipe the cache
+	--add our own LAS interrupts
+	self.tPartyLASInterrupts[self.uPlayer:GetName()] = self:MyLASInterrupts(true)
+	-- request party LAS interrupts
+	self:SendCommMessage({type = "requestPartyLASInterrupts"})
+end
+
+function addon:OnDebugButton()
+	D(self.tPartyLASInterrupts)
+end
+
+function addon:MyLASInterrupts(bReturnNotSend)
+	local sMemberName = self.uPlayer and self.uPlayer:GetName()
+	self.tCurrLAS = ActionSetLib.GetCurrentActionSet()
+	-- We sync spellIds because you can't get description from an abilityId if it is not for your class
+	local tSpellIds = {}
+	for nIndex, nAbilityId in ipairs(self.tCurrLAS) do
+		if tInterrupts[nAbilityId] then
+			tSpellIds[#tSpellIds+1] = self:GetTieredSpellIdFromLasAbilityId(nAbilityId)
+		end
+	end
+	-- do a bunch of nil checks here so we don't send data that is nil, doh
+	if sMemberName and #tSpellIds > 0 then
+		if bReturnNotSend then
+			return tSpellIds
+		else
+			self:SendCommMessage({type = "LASInterrupts", sMemberName = sMemberName, tSpellIds = tSpellIds })
+		end
+	end
+end
+
+function addon:ParseLASInterrupts(tData)
+	-- make sure we got data from everyone in the group if not notify the user
 end
 
 -----------------------------------------------------------------------------------------------
@@ -543,7 +648,10 @@ function addon:OnCommMessage(channel, tMsg)
 
 	if channel ~= self.CommChannel then return nil end
 
-	--D(tMsg)
+	--if tMsg.type ~= "barupdate" then
+	--	D(tMsg.type)
+	--end
+
 	if tMsg.type == "barupdate" then
 		for nBarIndex, tBarData in ipairs(tMsg.tBarData) do
 			local nMemberIndexInGroup = getMemberOfGroupIndex(tBarData.sGroupName, tBarData.sMemberName)
@@ -551,6 +659,12 @@ function addon:OnCommMessage(channel, tMsg)
 				self.tGroups[tBarData.sGroupName].BarContainers[nMemberIndexInGroup].bars[tBarData.nBarIndex].frame:SetProgress(tBarData.nProgress)
 			end
 		end
+	elseif tMsg.type == "requestPartyLASInterrupts" then
+		D("LAS request received")
+		self:MyLASInterrupts()
+	elseif tMsg.type == "LASInterrupts" then
+		self.tPartyLASInterrupts[tMsg.sMemberName] = tMsg.tSpellIds
+		--self:SendCommMessage({type = "LASInterrupts", sMemberName = sMemberName, tSpellIds = tSpellIds })
 	end
 	--self:UpdateSpell(tMsg)
 end
