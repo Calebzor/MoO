@@ -20,6 +20,7 @@ require "GroupLib"
 require "ICCommLib"
 require "CColor"
 require "AbilityBook"
+require "Tooltip"
 
 local setmetatable = setmetatable
 local pairs = pairs
@@ -28,6 +29,7 @@ local table = table
 local type = type
 local string = string
 local tonumber = tonumber
+local floor = math.floor
 local Apollo = Apollo
 local ActionSetLib = ActionSetLib
 local GameLib = GameLib
@@ -35,11 +37,14 @@ local GroupLib = GroupLib
 local ICCommLib = ICCommLib
 local AbilityBook = AbilityBook
 local CColor = CColor
+local Tooltip = Tooltip
 local _ = _
 
 
 local MoO = {}
 local addon = MoO
+
+local nVersionNumber = "1"
 
 
 local function hexToCColor(color, a)
@@ -75,6 +80,9 @@ function addon:new(o)
 	self.sChannelName = nil
 	self.tPartyLASInterrupts = {}
 	self.bAllGroupsLocked = nil
+	self.tVersionData = {}
+	self.bVersionCheckAllowed = true
+	self.bAcceptGroupSync = nil
 
 	return o
 end
@@ -93,6 +101,7 @@ function addon:OnLoad()
 	Apollo.RegisterEventHandler("Group_Join", "OnGroupJoin", self)
 	Apollo.RegisterEventHandler("Group_Left", "OnGroupLeft", self)
 	Apollo.RegisterEventHandler("Group_Updated", "OnGroupUpdated", self)
+	Apollo.RegisterEventHandler("SpecChanged", "OnSpecChanged", self)
 
 	--self.wAbility = Apollo.LoadForm("MoO.xml", "TempAbilityWindow", nil, self)
 
@@ -108,14 +117,20 @@ function addon:OnLoad()
 	self.wOptions = nil
 
 	-- XXX debug
-	self:OnSlashCommand(_, "config")
+
 
 end
 
 function addon:DelayedInit()
 	self.uPlayer = GameLib.GetPlayerUnit()
 --	self.tCurrLAS = ActionSetLib.GetCurrentActionSet() -- this should be only done on LAS change
-	testmoo()
+	--testmoo()
+
+	--self:AddToGroup("Group1", "Caleb", 32812, 35)
+	--self:AddToGroup("Group1", "RaidSlinger", 46160, 20)
+	--self:AddToGroup("Group1", "RaidSlinger", 34355, 30)
+	--self:ShowMemberButtons(nil, true, true)
+
 	if not self.uPlayer then
 		Apollo.CreateTimer("DelayedInit", 1, false)
 	end
@@ -131,6 +146,7 @@ local function getFirstIndexOfIndexedTablqe(t)
 end
 
 local function getMemberOfGroupIndex(sGroupName, sMemberName)
+	if not addon.tGroups[sGroupName] then return false end
 	for k, v in ipairs(addon.tGroups[sGroupName].BarContainers) do
 		if v.name == sMemberName then
 			return k
@@ -174,6 +190,114 @@ function testmoo()
 	addon:ShowMemberButtons(nil, true, true)
 end
 
+function addon:OnSpecChanged(newSpecIndex, specError)
+	if specError == AbilityBook.CodeEnumSpecError.Ok then
+		-- warns others that I have changed my LAS (obviously only if interrupt is added/removed)
+
+	end
+end
+
+function addon:OnEditMemberButton(wHandler)
+	local sMemberName = wHandler:GetParent():GetData() and wHandler:GetParent():GetData().sMemberName
+	self:OpenEditMember(wHandler:GetParent():GetParent():GetData().sGroupName, sMemberName)
+end
+
+function addon:OpenEditMember(sGroupName, sMemberName)
+	local wEditMember = Apollo.LoadForm("MoO.xml", "EditMemberContainer", nil, self)
+	wEditMember:FindChild("GroupName"):SetText(sGroupName)
+	local wMemberSelector = Apollo.LoadForm("MoO.xml", "DropDownWidget", wEditMember:FindChild("MemberSelectorContainer"), self)
+	wMemberSelector:FindChild("MainButton"):SetText(sMemberName and sMemberName or "Click to select a member")
+	if sMemberName then
+		self:MemberSelectedPopulateAbilityList(wEditMember, sMemberName)
+	end
+end
+
+function addon:OnGenerateSpellTooltip(wndHandler, wndControl, eToolTipType, x, y)
+	if wndControl == wndHandler then
+		Tooltip.GetSpellTooltipForm(self, wndHandler, wndHandler:GetData())
+	end
+end
+
+function addon:MemberSelectedPopulateAbilityList(wContainer, sMemberName)
+	local nNumOfSpells
+	local bHaveLASAbilitiesForMember
+	for sMemberNames, tSpells in pairs(self.tPartyLASInterrupts) do
+		if sMemberNames == sMemberName then
+			nNumOfSpells = #tSpells
+			if nNumOfSpells > 0 then
+				bHaveLASAbilitiesForMember = true
+			end
+			wContainer:FindChild("SpellSelectorContainer"):SetText("")
+			wContainer:FindChild("SpellSelectorContainer"):DestroyChildren()
+			for _, nSpellId in ipairs(tSpells) do
+				local wCurrSpell = Apollo.LoadForm("MoO.xml", "SpellbookItem", wContainer:FindChild("SpellSelectorContainer"), self)
+				local spell = GameLib.GetSpell(nSpellId)
+
+				wCurrSpell:FindChild("SpellbookItemName"):SetText(spell:GetName() or "Unknown")
+				wCurrSpell:FindChild("SpellbookItemAbilityIcon"):SetSprite(spell:GetIcon() or "")
+				wCurrSpell:FindChild("SpellbookItemAbilityIcon"):SetData(spell)
+
+
+				local sGroupName = wContainer:FindChild("GroupName"):GetText()
+				for _, BarContainers in ipairs(self.tGroups[sGroupName].BarContainers) do
+					if BarContainers.name == sMemberNames then
+						for _, tBar in ipairs(BarContainers.bars) do
+							if tBar.nSpellId == nSpellId then
+								wCurrSpell:FindChild("TickBox"):SetCheck(true)
+								break
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+	if not bHaveLASAbilitiesForMember then
+		wContainer:FindChild("SpellSelectorContainer"):SetText("Mouse over here for more info")
+		wContainer:FindChild("SpellSelectorContainer"):SetTooltip([[No LAS data available
+
+		If you know this member has the addon, but no LAS data show up,
+		then press the "Request Party LAS Interrupts" button in the options,
+		then select the members name again from the dropout menu
+		just above the "Mouse over here for more info" red text.]])
+	end
+	if nNumOfSpells then
+		local l,t,r,b = wContainer:GetAnchorOffsets()
+		wContainer:SetAnchorOffsets(l, t, r, t+140+32*(nNumOfSpells-1))
+	end
+
+	wContainer:FindChild("SpellSelectorContainer"):ArrangeChildrenVert(0)
+end
+
+function addon:OnMemberContainerClose(wHandler)
+	if wHandler:GetName() == "Discard" then
+		wHandler:GetParent():Destroy()
+	else -- Accept
+		-- destroy our bars if we had any we'll recreat them (or not if none is ticked in the spell selector)
+		local sGroupName, sMemberName = wHandler:GetParent():FindChild("GroupName"):GetText(), wHandler:GetParent():FindChild("MainButton"):GetText()
+		for indexOfMember, BarContainers in ipairs(self.tGroups[sGroupName].BarContainers) do
+			if BarContainers.name == sMemberName then
+				BarContainers.frame:Destroy()
+				table.remove(self.tGroups[sGroupName].BarContainers, indexOfMember)
+
+			end
+		end
+
+		--wHandler:GetParent():FindChild("TickBox"):IsChecked()
+		for nIndex, wSpellBookItem in ipairs(wHandler:GetParent():FindChild("SpellSelectorContainer"):GetChildren()) do
+			if wSpellBookItem:FindChild("TickBox"):IsChecked() then
+				local nSpellId = wSpellBookItem:FindChild("SpellbookItemAbilityIcon"):GetData():GetId()
+				self:AddMemberToGroup(sGroupName, sMemberName)
+				self:AddBarToMemberInGroup(sGroupName, sMemberName, nSpellId)
+			end
+		end
+		self:RedrawGroup(sGroupName)
+		self:ShowMemberButtons(sGroupName, true)
+		wHandler:GetParent():Destroy()
+	end
+end
+
+
 function addon:OnLockGroupButton(wHandler)
 	if wHandler:GetName() == "LockUnlockAllGroupsButton" then
 		for _, v in pairs(self.tGroups) do
@@ -208,18 +332,17 @@ function addon:ShowMemberButtons(sTheActualGroupsName, bShow, bAllGroups)
 	end
 end
 
-function addon:AddGroup(sGroupName, sMemberName, name, nMax)
-	self:NewGroup(sGroupName)
+function addon:AddToGroup(sGroupName, sMemberName, name, nMax, bLocked)
+	self:NewGroup(sGroupName, bLocked)
 	self:AddMemberToGroup(sGroupName, sMemberName)
 	self:AddBarToMemberInGroup(sGroupName, sMemberName, name, nMax)
-
-
 end
 
 function addon:NewGroup(sGroupName, bLocked)
 	if self.tGroups[sGroupName] then return end -- that group already exists
 	self.tGroups[sGroupName] = {}
 	self.tGroups[sGroupName].GroupContainer = Apollo.LoadForm("MoO.xml", "GroupContainer", nil, self)
+	self.tGroups[sGroupName].GroupContainer:FindChild("GroupName"):SetText(sGroupName)
 	self.tGroups[sGroupName].GroupContainer:SetData({sGroupName = sGroupName, bLocked = bLocked})
 	self.tGroups[sGroupName].BarContainers = {}
 end
@@ -238,11 +361,8 @@ function addon:AddMemberToGroup(sGroupName, sMemberName)
 	self.tGroups[sGroupName].BarContainers[nNumOfMembers].frame:FindChild("Text"):SetText(sMemberName)
 	self.tGroups[sGroupName].BarContainers[nNumOfMembers].name = sMemberName
 
-
 	self:RedrawGroup(sGroupName)
 end
-
-
 
 function addon:AddBarToMemberInGroup(sGroupName, sMemberName, nSpellId, nMax)
 	local nMemberIndexInGroup = getMemberOfGroupIndex(sGroupName, sMemberName)
@@ -260,7 +380,7 @@ function addon:AddBarToMemberInGroup(sGroupName, sMemberName, nSpellId, nMax)
 		--self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars].frame:SetBGColor(hexToCColor("FFFFFF", 0.5))     -- XXX fix these colors
 
 		self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars].nSpellId = nSpellId -- this can be a spellId or just a text
-		if not nMax then nMax = GameLib.GetSpell(nSpellId):GetCooldownTime() end
+		if not nMax then nMax = floor(GameLib.GetSpell(nSpellId):GetCooldownTime()) end -- floor because sometimes you get values like 40.00000000000001 which is not so nice
 		self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars].nMax = nMax
 		self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars].frame:SetMax(nMax)
 
@@ -297,8 +417,14 @@ function addon:FitBarsToMember(sGroupName, sMemberName)
 	end
 end
 
-function addon:RedrawGroup(sGroupName)
-	local l,t,r,b = self.tGroups[sGroupName].GroupContainer:GetAnchorOffsets()
+function addon:RedrawGroup(sGroupName, tAnchorOffsets)
+	local l,t,r,b
+	if tAnchorOffsets then
+		l,t,r,b = tAnchorOffsets.l, tAnchorOffsets.t, tAnchorOffsets.r, tAnchorOffsets.b
+		self.tGroups[sGroupName].GroupContainer:SetAnchorOffsets(l,t,r,b)
+	else
+		l,t,r,b = self.tGroups[sGroupName].GroupContainer:GetAnchorOffsets()
+	end
 	local nGroupWidth, nGroupHeight = r-l, b-t
 	local nMemberHeight = nGroupHeight/#self.tGroups[sGroupName].BarContainers
 	for index, bars in ipairs(self.tGroups[sGroupName].BarContainers) do
@@ -369,7 +495,7 @@ function addon:CopyGroupButton()
 	else
 		if wEditbox:GetText() ~= "That group name is already in use." then
 			local sSourceGroupName = self.wOptions:FindChild("GroupCopyContainer"):FindChild("CopyGroupSelectorContainer"):FindChild("DropDownWidget"):FindChild("MainButton"):GetText()
-			if sSourceGroupName == "No groups added yet" then return end -- retard check
+			if sSourceGroupName == "No entry added yet" then return end -- retard check
 			self:NewGroup(sNewGroupName)
 			for nMemberIndexInGroup, tMemberData in ipairs(self.tGroups[sSourceGroupName].BarContainers) do
 				local nNumOfMembers = #self.tGroups[sNewGroupName].BarContainers+1
@@ -412,8 +538,11 @@ end
 function addon:Options()
 	if not self.wOptions then self.wOptions = Apollo.LoadForm("MoO.xml", "OptionsContainer", nil, self) end
 
-	Apollo.LoadForm("MoO.xml", "DropDownWidget", self.wOptions:FindChild("DeleteGroupSelectorContainer"), self)
-	Apollo.LoadForm("MoO.xml", "DropDownWidget", self.wOptions:FindChild("CopyGroupSelectorContainer"), self)
+	local wDeleteGroupSelectorContainer = Apollo.LoadForm("MoO.xml", "DropDownWidget", self.wOptions:FindChild("DeleteGroupSelectorContainer"), self)
+	local wCopyGroupSelectorContainer = Apollo.LoadForm("MoO.xml", "DropDownWidget", self.wOptions:FindChild("CopyGroupSelectorContainer"), self)
+	wDeleteGroupSelectorContainer:FindChild("MainButton"):SetText("Click to select a group")
+	wCopyGroupSelectorContainer:FindChild("MainButton"):SetText("Click to select a group")
+	self.wOptions:FindChild("AllowGroupSync"):SetCheck(self.bAcceptGroupSync)
 end
 
 function addon:OnSlashCommand(_, input)
@@ -469,11 +598,29 @@ function addon:RequestPartyLASInterrupts()
 	--add our own LAS interrupts
 	self.tPartyLASInterrupts[self.uPlayer:GetName()] = self:MyLASInterrupts(true)
 	-- request party LAS interrupts
-	self:SendCommMessage({type = "requestPartyLASInterrupts"})
+	self:SendCommMessage({type = "RequestPartyLASInterrupts"})
 end
 
 function addon:OnDebugButton()
-	D(self.tPartyLASInterrupts)
+
+	local tData = {}
+	for sGroupName, tGroupData in pairs(self.tGroups) do
+		tData[sGroupName] = {}
+		local l,t,r,b = tGroupData.GroupContainer:GetAnchorOffsets()
+		tData[sGroupName].tAnchorOffsets = { l = l, t = t, r = r, b = b }
+		tData[sGroupName].bLocked = tGroupData.GroupContainer:GetData().bLocked
+		for nMemberIndexInGroup, tMemberData in pairs(self.tGroups[sGroupName].BarContainers) do
+			tData[sGroupName][nMemberIndexInGroup] = {}
+			tData[sGroupName][nMemberIndexInGroup].name = tMemberData.name
+			tData[sGroupName][nMemberIndexInGroup].tBars = {}
+			for nBarIndex, tBar in pairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
+				tData[sGroupName][nMemberIndexInGroup].tBars[nBarIndex] = {}
+				tData[sGroupName][nMemberIndexInGroup].tBars[nBarIndex].nSpellId = tBar.nSpellId
+				tData[sGroupName][nMemberIndexInGroup].tBars[nBarIndex].nMax = tBar.nMax
+			end
+		end
+	end
+	D(tData)
 end
 
 function addon:MyLASInterrupts(bReturnNotSend)
@@ -509,31 +656,33 @@ function addon:OnDropDownMainButton(wHandler)
 	local tData = {}
 	if wHandler:GetParent():GetParent():GetName():find("Group") then -- it is a group dropdown
 		tData = self.tGroups
+	elseif wHandler:GetParent():GetParent():GetName():find("Member") then -- it is a member dropdown
+		tData = self.tPartyLASInterrupts
 	end
 	local choiceContainer = wHandler:FindChild("ChoiceContainer")
 	choiceContainer:DestroyChildren() -- clear the container, we populate it every time it opens
 	choiceContainer:SetData({})
-	local nGroupCounter = 0
+	local nCounter = 0
 	local wEntry
-	for sNewGroupName, _ in pairs(tData) do
+	for sNewName, _ in pairs(tData) do
 		wEntry = Apollo.LoadForm("MoO.xml", "DropDownWidgetEntryButton", choiceContainer, self)
-		wEntry:SetText(sNewGroupName)
+		wEntry:SetText(sNewName)
 		wEntry:Show(true)
-		nGroupCounter = nGroupCounter + 1
+		nCounter = nCounter + 1
 	end
 	choiceContainer:ArrangeChildrenVert(0)
-	if nGroupCounter == 0 then -- no groups added yet add an entry that says that
+	if nCounter == 0 then -- no entry added yet add an entry that says that
 		wEntry = Apollo.LoadForm("MoO.xml", "DropDownWidgetEntryButton", choiceContainer, self)
-		wEntry:SetText("No groups added yet")
+		wEntry:SetText("No entry added yet")
 		wEntry:Show(true)
-		nGroupCounter = nGroupCounter + 1
+		nCounter = nCounter + 1
 	end
 
 	local l,t,r,b = choiceContainer:GetAnchorOffsets()
-	choiceContainer:SetAnchorOffsets(l, t, r, t+nGroupCounter*wEntry:GetHeight())
+	choiceContainer:SetAnchorOffsets(l, t, r, t+nCounter*wEntry:GetHeight())
 	choiceContainer:Show(true)
 	l,t,r,b = wHandler:FindChild("ChoiceContainerBG"):GetAnchorOffsets()
-	wHandler:FindChild("ChoiceContainerBG"):SetAnchorOffsets(l, t, r, t+nGroupCounter*wEntry:GetHeight()+30)
+	wHandler:FindChild("ChoiceContainerBG"):SetAnchorOffsets(l, t, r, t+nCounter*wEntry:GetHeight()+30)
 	wHandler:FindChild("ChoiceContainerBG"):Show(true)
 end
 
@@ -541,6 +690,15 @@ function addon:OnDropDownEntrySelect(wHandler)
 	wHandler:GetParent():GetParent():SetText(wHandler:GetText())
 	wHandler:GetParent():Show(false)
 	wHandler:GetParent():GetParent():FindChild("ChoiceContainerBG"):Show(false)
+
+	local wContainer =  wHandler:GetParent():GetParent():GetParent():GetParent():GetParent()
+	if wContainer:GetName():find("Member") then
+		self:MemberSelectedPopulateAbilityList(wContainer, wHandler:GetText())
+	end
+end
+
+function addon:OnDropDownChoiceContainerHide(wHandler)
+	wHandler:GetParent():FindChild("ChoiceContainer"):Show(false)
 end
 
 -----------------------------------------------------------------------------------------------
@@ -569,6 +727,7 @@ function addon:OnOneSecTimer()
 	end
 end
 
+-- I know this is the core of the addon, but yeah it needs some cleaning up or rework, cuz this is not ideal
 function addon:BarUpdater()
 	self.nTimer = self.nTimer + self.nBarTimeIncrement
 	for sGroupName, tGroupData in pairs(self.tGroups) do
@@ -611,26 +770,7 @@ function addon:BarUpdater()
 			end
 		end
 	end
-
-
-
-	--for k, wndBar in next, self.tBars do
-	--	if wndBar then
-	--		local nStart, nDuration = unpack(wndBar:GetData())
-	--		local nEnd = nStart + nDuration
-	--		wndBar:FindChild("ProgressBar"):SetMax(nDuration)
-	--		wndBar:FindChild("ProgressBar"):SetProgress(self.nTimer-nStart)
-	--		wndBar:FindChild("Time"):SetText(("%.1f"):format(nEnd-self.nTimer))
-	--		if self.nTimer > nEnd then -- delete expired bar
-	--			wndBar:Destroy()
-	--			self.tBars[k] = nil
-	--		end
-	--	end
-	--end
-	--self.wndBars:ArrangeChildrenVert(0)
 end
-
-
 function addon:SetGroupChannel(sGroupLeader)
 	local sNewChannel = string.format("Moo_%s%s", sGroupLeader, string.reverse(sGroupLeader))
 
@@ -644,13 +784,32 @@ function addon:LeaveGroupChannel()
 	self.sChannelName = ""
 end
 
+function addon:OnAllowGroupSyncButton(wHandler)
+	self.bAcceptGroupSync = wHandler:IsChecked()
+	D(self.bAcceptGroupSync)
+end
+
+function addon:SendGroups()
+	local tData = {}
+	for sGroupName, tGroupData in pairs(self.tGroups) do
+		tData[sGroupName] = {}
+		for nMemberIndexInGroup, tMemberData in pairs(self.tGroups[sGroupName].BarContainers) do
+			tData[sGroupName][nMemberIndexInGroup] = {}
+			tData[sGroupName][nMemberIndexInGroup].name = tMemberData.name
+			tData[sGroupName][nMemberIndexInGroup].tBars = {}
+			for nBarIndex, tBar in pairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
+				tData[sGroupName][nMemberIndexInGroup].tBars[nBarIndex] = {}
+				tData[sGroupName][nMemberIndexInGroup].tBars[nBarIndex].nSpellId = tBar.nSpellId
+				tData[sGroupName][nMemberIndexInGroup].tBars[nBarIndex].nMax = tBar.nMax
+			end
+		end
+	end
+
+	self:SendCommMessage({type = "GroupSync", tGroupData = tData})
+end
+
 function addon:OnCommMessage(channel, tMsg)
-
 	if channel ~= self.CommChannel then return nil end
-
-	--if tMsg.type ~= "barupdate" then
-	--	D(tMsg.type)
-	--end
 
 	if tMsg.type == "barupdate" then
 		for nBarIndex, tBarData in ipairs(tMsg.tBarData) do
@@ -659,17 +818,33 @@ function addon:OnCommMessage(channel, tMsg)
 				self.tGroups[tBarData.sGroupName].BarContainers[nMemberIndexInGroup].bars[tBarData.nBarIndex].frame:SetProgress(tBarData.nProgress)
 			end
 		end
-	elseif tMsg.type == "requestPartyLASInterrupts" then
+	elseif tMsg.type == "RequestPartyLASInterrupts" then
 		D("LAS request received")
 		self:MyLASInterrupts()
 	elseif tMsg.type == "LASInterrupts" then
 		self.tPartyLASInterrupts[tMsg.sMemberName] = tMsg.tSpellIds
-		--self:SendCommMessage({type = "LASInterrupts", sMemberName = sMemberName, tSpellIds = tSpellIds })
+	elseif tMsg.type == "RequestVersionCheck" then
+		self:SendCommMessage({type = "VersionCheckData", sMemberName = self.uPlayer:GetName(), nVersionNumber = nVersionNumber})
+	elseif tMsg.type == "VersionCheckData" then
+		self.tVersionData[#self.tVersionData+1] = { sName = tMsg.sMemberName, nVersionNumber = tMsg.nVersionNumber }
+	elseif tMsg.type == "GroupSync" and self.bAcceptGroupSync then
+		-- destroy what we have so we can start fresh
+		--D(tMsg.tGroupData)
+		for sGroupName, _  in pairs(self.tGroups) do
+			self.tGroups[sGroupName].GroupContainer:Destroy()
+			self.tGroups[sGroupName] = nil
+		end
+		for sGroupName, tGroupData in pairs(tMsg.tGroupData) do
+			for nMemberIndexInGroup, tMemberData in ipairs(tGroupData) do
+				for nBarIndex, tBar in ipairs(tMemberData.tBars) do
+					self:AddToGroup(sGroupName, tMemberData.name, tBar.nSpellId, tBar.nMax)
+				end
+			end
+		end
+
 	end
-	--self:UpdateSpell(tMsg)
 end
 
--- Apollo.GetAddon("MoO"):SendCommMessage("poop")
 function addon:SendCommMessage(message)
 	if self.CommChannel then
 		self.CommChannel:SendMessage(message)
@@ -698,6 +873,94 @@ end
 
 function addon:OnGroupUpdated()
 	self:OnGroupJoin()
+end
+
+do
+	local bTimerExists
+	function addon:VersionCheck()
+		if not self.bVersionCheckAllowed then return end -- lets not allow spamming
+		self.bVersionCheckAllowed = false
+		self.tVersionData = {}
+		self.tVersionData[#self.tVersionData+1] = { sName = self.uPlayer:GetName(), nVersionNumber = nVersionNumber}
+		if not bTimerExists then
+			Apollo.RegisterTimerHandler("DelayedPrint", "DelayedPrint", self)
+			Apollo.CreateTimer("DelayedPrint", 2, false)
+			bTimerExists = true
+		else
+			Apollo.StartTimer("DelayedPrint")
+		end
+		self:SendCommMessage({type = "RequestVersionCheck"})
+	end
+	function addon:DelayedPrint()
+		table.sort(self.tVersionData, function( a,b ) return a.sName > b.sName end)
+		local sString = ""
+		for k, v in ipairs(self.tVersionData) do
+			if k == 1 then
+				sString = ("(%s: %s)."):format(v.sName, v.nVersionNumber, sString)
+			else
+				sString = ("(%s: %s), %s "):format(v.sName, v.nVersionNumber, sString)
+			end
+		end
+		Print(("MoO version info: %s"):format(sString))
+		self.bVersionCheckAllowed = true
+	end
+end
+
+function addon:OnRestore(eLevel, tDB)
+	if eLevel ~= GameLib.CodeEnumAddonSaveLevel.General then return end
+	self.bAcceptGroupSync = tDB.bAcceptGroupSync
+
+
+	--D(tDB.tActiveGroupData)
+	if tDB.tActiveGroupData then
+		for sGroupName, _  in pairs(self.tGroups) do
+			self.tGroups[sGroupName].GroupContainer:Destroy()
+			self.tGroups[sGroupName] = nil
+		end
+		for sGroupName, tGroupData in pairs(tDB.tActiveGroupData) do
+			for nMemberIndexInGroup, tMemberData in ipairs(tGroupData) do
+				for nBarIndex, tBar in ipairs(tMemberData.tBars) do
+					self:AddToGroup(sGroupName, tMemberData.name, tBar.nSpellId, tBar.nMax, not tGroupData.bLocked)
+				end
+			end
+			self:RedrawGroup(sGroupName, tGroupData.tAnchorOffsets)
+			self:OnLockGroupButton(self.tGroups[sGroupName].GroupContainer:FindChild("Lock"))
+		end
+	end
+
+
+	-- XXX debug
+
+	self:OnSlashCommand(_, "config")
+end
+
+function addon:OnSave(eLevel)
+	if eLevel ~= GameLib.CodeEnumAddonSaveLevel.General then return end -- save on the widest level so data is accessible across everything
+	local tDB = {}
+
+	tDB.bAcceptGroupSync = self.bAcceptGroupSync
+
+	local tData = {}
+	for sGroupName, tGroupData in pairs(self.tGroups) do
+		tData[sGroupName] = {}
+		local l,t,r,b = tGroupData.GroupContainer:GetAnchorOffsets()
+		tData[sGroupName].tAnchorOffsets = { l = l, t = t, r = r, b = b }
+		tData[sGroupName].bLocked = tGroupData.GroupContainer:GetData().bLocked
+		for nMemberIndexInGroup, tMemberData in pairs(self.tGroups[sGroupName].BarContainers) do
+			tData[sGroupName][nMemberIndexInGroup] = {}
+			tData[sGroupName][nMemberIndexInGroup].name = tMemberData.name
+			tData[sGroupName][nMemberIndexInGroup].tBars = {}
+			for nBarIndex, tBar in pairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
+				tData[sGroupName][nMemberIndexInGroup].tBars[nBarIndex] = {}
+				tData[sGroupName][nMemberIndexInGroup].tBars[nBarIndex].nSpellId = tBar.nSpellId
+				tData[sGroupName][nMemberIndexInGroup].tBars[nBarIndex].nMax = tBar.nMax
+			end
+		end
+	end
+
+	tDB.tActiveGroupData = tData
+
+	return tDB
 end
 
 
