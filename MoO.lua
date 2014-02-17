@@ -11,6 +11,10 @@ TODO:
 	have a one button setup for like 5 man dungeons
 	only show my group option
 
+	notification window when receiving group sync so people know the windows are on top of each other in case of multiple groups
+
+	fix so synced bar updates update every groups bar, basically sync ability CDs not bars.
+
 	hook into bossmods
 ]]---------------------------------------------------------------------------------------------
 
@@ -38,6 +42,7 @@ local ICCommLib = ICCommLib
 local AbilityBook = AbilityBook
 local CColor = CColor
 local Tooltip = Tooltip
+local Event_FireGenericEvent = Event_FireGenericEvent
 local _ = _
 
 
@@ -63,6 +68,7 @@ local tColor = {
 	blue = hexToCColor("00b0d8"),
 }
 
+local tPartyLASInterrupts = {} -- for some reason this has to be here and not inside our addons metatable, else the widget does no update for groups created by OnRestore -- should probably figure out why at some point
 
 -----------------------------------------------------------------------------------------------
 -- Initialization
@@ -78,11 +84,12 @@ function addon:new(o)
 	self.tCurrLAS = nil
 	self.uPlayer = nil
 	self.sChannelName = nil
-	self.tPartyLASInterrupts = {}
+
 	self.bAllGroupsLocked = nil
 	self.tVersionData = {}
 	self.bVersionCheckAllowed = true
-	self.bAcceptGroupSync = nil
+	self.bAcceptGroupSync = true
+	self.tSavedGroups = {}
 
 	return o
 end
@@ -221,7 +228,7 @@ end
 function addon:MemberSelectedPopulateAbilityList(wContainer, sMemberName)
 	local nNumOfSpells
 	local bHaveLASAbilitiesForMember
-	for sMemberNames, tSpells in pairs(self.tPartyLASInterrupts) do
+	for sMemberNames, tSpells in pairs(tPartyLASInterrupts) do
 		if sMemberNames == sMemberName then
 			nNumOfSpells = #tSpells
 			if nNumOfSpells > 0 then
@@ -594,9 +601,9 @@ function addon:GetTieredSpellIdFromLasAbilityId(nAbilityId)
 end
 
 function addon:RequestPartyLASInterrupts()
-	self.tPartyLASInterrupts = {} -- wipe the cache
+	tPartyLASInterrupts = {} -- wipe the cache
 	--add our own LAS interrupts
-	self.tPartyLASInterrupts[self.uPlayer:GetName()] = self:MyLASInterrupts(true)
+	tPartyLASInterrupts[self.uPlayer:GetName()] = self:MyLASInterrupts(true)
 	-- request party LAS interrupts
 	self:SendCommMessage({type = "RequestPartyLASInterrupts"})
 end
@@ -657,7 +664,7 @@ function addon:OnDropDownMainButton(wHandler)
 	if wHandler:GetParent():GetParent():GetName():find("Group") then -- it is a group dropdown
 		tData = self.tGroups
 	elseif wHandler:GetParent():GetParent():GetName():find("Member") then -- it is a member dropdown
-		tData = self.tPartyLASInterrupts
+		tData = tPartyLASInterrupts
 	end
 	local choiceContainer = wHandler:FindChild("ChoiceContainer")
 	choiceContainer:DestroyChildren() -- clear the container, we populate it every time it opens
@@ -822,7 +829,7 @@ function addon:OnCommMessage(channel, tMsg)
 		D("LAS request received")
 		self:MyLASInterrupts()
 	elseif tMsg.type == "LASInterrupts" then
-		self.tPartyLASInterrupts[tMsg.sMemberName] = tMsg.tSpellIds
+		tPartyLASInterrupts[tMsg.sMemberName] = tMsg.tSpellIds
 	elseif tMsg.type == "RequestVersionCheck" then
 		self:SendCommMessage({type = "VersionCheckData", sMemberName = self.uPlayer:GetName(), nVersionNumber = nVersionNumber})
 	elseif tMsg.type == "VersionCheckData" then
@@ -906,40 +913,58 @@ do
 	end
 end
 
-function addon:OnRestore(eLevel, tDB)
-	if eLevel ~= GameLib.CodeEnumAddonSaveLevel.General then return end
-	self.bAcceptGroupSync = tDB.bAcceptGroupSync
 
 
-	--D(tDB.tActiveGroupData)
-	if tDB.tActiveGroupData then
-		for sGroupName, _  in pairs(self.tGroups) do
-			self.tGroups[sGroupName].GroupContainer:Destroy()
-			self.tGroups[sGroupName] = nil
-		end
-		for sGroupName, tGroupData in pairs(tDB.tActiveGroupData) do
-			for nMemberIndexInGroup, tMemberData in ipairs(tGroupData) do
-				for nBarIndex, tBar in ipairs(tMemberData.tBars) do
-					self:AddToGroup(sGroupName, tMemberData.name, tBar.nSpellId, tBar.nMax, not tGroupData.bLocked)
-				end
-			end
-			self:RedrawGroup(sGroupName, tGroupData.tAnchorOffsets)
-			self:OnLockGroupButton(self.tGroups[sGroupName].GroupContainer:FindChild("Lock"))
-		end
-	end
+-----------------------------------------------------------------------------------------------
+-- Saving/Loading/Deleting Groups
+-----------------------------------------------------------------------------------------------
 
-
-	-- XXX debug
-
-	self:OnSlashCommand(_, "config")
+function addon:SaveGroupsButton(wHandler)
+	if self.wSaveGroups then self.wSaveGroups:Destroy() end -- start over
+	self.wSaveGroups = Apollo.LoadForm("MoO.xml", "SaveGroups", nil, self)
+	self.wSaveGroups:Show(true)
 end
 
-function addon:OnSave(eLevel)
-	if eLevel ~= GameLib.CodeEnumAddonSaveLevel.General then return end -- save on the widest level so data is accessible across everything
-	local tDB = {}
+function addon:OnSaveGroupsCloseButtons(wHandler)
+	if wHandler:GetName() == "Discard" then wHandler:GetParent():Destroy() return end -- close
 
-	tDB.bAcceptGroupSync = self.bAcceptGroupSync
+	local sName = wHandler:GetParent():FindChild("EditBox"):GetText()
 
+	if not self.tSavedGroups[sName] then
+		self:SaveGroups(sName)
+		wHandler:GetParent():Destroy()
+	else
+		local wConfirm = Apollo.LoadForm("MoO.xml", "GenericConfirmationWindow", nil, self)
+		wConfirm:SetData({ type = "ConfirGroupsOverwrite", sName = sName})
+		wConfirm:FindChild("Title"):SetText("Confirm overwrite")
+		wConfirm:FindChild("HelpText"):SetText("That name already exists in the database. Do you want to overwrite it?")
+	end
+end
+
+function addon:SaveGroups(sName)
+	self.tSavedGroups[sName] = self:GenerateSavableGroupTable()
+end
+
+-----------------------------------------------------------------------------------------------
+-- Generic confirmation window button handlers
+-----------------------------------------------------------------------------------------------
+
+function addon:OnGenericButton(wHandler)
+	local tParentData = wHandler:GetParent():GetData()
+	if tParentData.type == "ConfirGroupsOverwrite" then
+		if wHandler:GetName() == "Yes" then
+			self:SaveGroups(tParentData.sName)
+			self.wSaveGroups:Destroy()
+		end
+		wHandler:GetParent():Destroy()
+	end
+end
+
+-----------------------------------------------------------------------------------------------
+-- Saved Variables
+-----------------------------------------------------------------------------------------------
+
+function addon:GenerateSavableGroupTable()
 	local tData = {}
 	for sGroupName, tGroupData in pairs(self.tGroups) do
 		tData[sGroupName] = {}
@@ -957,12 +982,57 @@ function addon:OnSave(eLevel)
 			end
 		end
 	end
+	return tData
+end
+
+function addon:LoadSavedGroups(tSavedGroupData)
+	for sGroupName, _  in pairs(self.tGroups) do
+		self.tGroups[sGroupName].GroupContainer:Destroy()
+		self.tGroups[sGroupName] = nil
+	end
+	for sGroupName, tGroupData in pairs(tSavedGroupData) do
+		for nMemberIndexInGroup, tMemberData in ipairs(tGroupData) do
+			for nBarIndex, tBar in ipairs(tMemberData.tBars) do
+				self:AddToGroup(sGroupName, tMemberData.name, tBar.nSpellId, tBar.nMax, not tGroupData.bLocked)
+			end
+		end
+		if #tGroupData > 0 then -- not an empty group (retard check?)
+			self:RedrawGroup(sGroupName, tGroupData.tAnchorOffsets)
+			self:OnLockGroupButton(self.tGroups[sGroupName].GroupContainer:FindChild("Lock"))
+		end
+	end
+end
+
+function addon:OnRestore(eLevel, tDB)
+	if eLevel ~= GameLib.CodeEnumAddonSaveLevel.General then return end
+	self.bAcceptGroupSync = tDB.bAcceptGroupSync
+
+	--D(tDB.tActiveGroupData)
+	if tDB.tActiveGroupData then
+		addon:LoadSavedGroups(tDB.tActiveGroupData)
+	end
+
+	self.tSavedGroups = tDB.tSavedGroups
+	--D(self.tSavedGroups)
+	-- XXX debug
+
+	self:OnSlashCommand(_, "config")
+end
+
+function addon:OnSave(eLevel)
+	if eLevel ~= GameLib.CodeEnumAddonSaveLevel.General then return end -- save on the widest level so data is accessible across everything
+	local tDB = {}
+
+	tDB.bAcceptGroupSync = self.bAcceptGroupSync
+
+	local tData = self:GenerateSavableGroupTable()
+
+	tDB.tSavedGroups = self.tSavedGroups
 
 	tDB.tActiveGroupData = tData
 
 	return tDB
 end
-
 
 local MoOInst = addon:new()
 MoOInst:Init()
