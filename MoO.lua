@@ -7,7 +7,6 @@
 TODO:
 	let others know when someone in the group changes LAS in a way that he/she looses/gains an interrupt ability
 
-	ability to save and load group setups
 	have a one button setup for like 5 man dungeons
 	only show my group option
 
@@ -549,6 +548,10 @@ function addon:Options()
 	local wCopyGroupSelectorContainer = Apollo.LoadForm("MoO.xml", "DropDownWidget", self.wOptions:FindChild("CopyGroupSelectorContainer"), self)
 	wDeleteGroupSelectorContainer:FindChild("MainButton"):SetText("Click to select a group")
 	wCopyGroupSelectorContainer:FindChild("MainButton"):SetText("Click to select a group")
+
+	local wSetupSelectorContainer = Apollo.LoadForm("MoO.xml", "DropDownWidget", self.wOptions:FindChild("SetupSelectorContainer"), self)
+	wSetupSelectorContainer:FindChild("MainButton"):SetText("Click to select a setup")
+
 	self.wOptions:FindChild("AllowGroupSync"):SetCheck(self.bAcceptGroupSync)
 end
 
@@ -665,6 +668,8 @@ function addon:OnDropDownMainButton(wHandler)
 		tData = self.tGroups
 	elseif wHandler:GetParent():GetParent():GetName():find("Member") then -- it is a member dropdown
 		tData = tPartyLASInterrupts
+	elseif wHandler:GetParent():GetParent():GetName():find("Setup") then -- it is a setup dropdown
+		tData = self.tSavedGroups
 	end
 	local choiceContainer = wHandler:FindChild("ChoiceContainer")
 	choiceContainer:DestroyChildren() -- clear the container, we populate it every time it opens
@@ -919,10 +924,22 @@ end
 -- Saving/Loading/Deleting Groups
 -----------------------------------------------------------------------------------------------
 
-function addon:SaveGroupsButton(wHandler)
-	if self.wSaveGroups then self.wSaveGroups:Destroy() end -- start over
-	self.wSaveGroups = Apollo.LoadForm("MoO.xml", "SaveGroups", nil, self)
-	self.wSaveGroups:Show(true)
+function addon:OnSetupButton(wHandler)
+	local sButtonName = wHandler:GetName()
+	if sButtonName:find("Save") then
+		if self.wSaveGroups then self.wSaveGroups:Destroy() end -- start over
+		self.wSaveGroups = Apollo.LoadForm("MoO.xml", "SaveGroupSetup", nil, self)
+		self.wSaveGroups:Show(true)
+	elseif sButtonName:find("Load") then
+		local sSetupNameToLoad = wHandler:GetParent():FindChild("MainButton"):GetText()
+		local wConfirm = Apollo.LoadForm("MoO.xml", "GenericConfirmationWindow", nil, self)
+		wConfirm:SetData({ type = "ConfirmSetupLoad", sName = sSetupNameToLoad})
+		wConfirm:FindChild("Title"):SetText("Setup load warning")
+		wConfirm:FindChild("HelpText"):SetText(("Loading a group setup discards the current group setup. If the current group setup is not saved already then it'll be lost. Load <%s> anyways?"):format(sSetupNameToLoad))
+	elseif sButtonName:find("Delete") then
+		self.tSavedGroups[wHandler:GetParent():FindChild("MainButton"):GetText()] = nil
+		wHandler:GetParent():FindChild("MainButton"):SetText("Click ot select a setup")
+	end
 end
 
 function addon:OnSaveGroupsCloseButtons(wHandler)
@@ -935,7 +952,7 @@ function addon:OnSaveGroupsCloseButtons(wHandler)
 		wHandler:GetParent():Destroy()
 	else
 		local wConfirm = Apollo.LoadForm("MoO.xml", "GenericConfirmationWindow", nil, self)
-		wConfirm:SetData({ type = "ConfirGroupsOverwrite", sName = sName})
+		wConfirm:SetData({ type = "ConfirmSetupOverwrite", sName = sName})
 		wConfirm:FindChild("Title"):SetText("Confirm overwrite")
 		wConfirm:FindChild("HelpText"):SetText("That name already exists in the database. Do you want to overwrite it?")
 	end
@@ -951,10 +968,15 @@ end
 
 function addon:OnGenericButton(wHandler)
 	local tParentData = wHandler:GetParent():GetData()
-	if tParentData.type == "ConfirGroupsOverwrite" then
+	if tParentData.type == "ConfirmSetupOverwrite" then
 		if wHandler:GetName() == "Yes" then
 			self:SaveGroups(tParentData.sName)
 			self.wSaveGroups:Destroy()
+		end
+		wHandler:GetParent():Destroy()
+	elseif tParentData.type == "ConfirmSetupLoad" then
+		if wHandler:GetName() == "Yes" and self.tSavedGroups[tParentData.sName] then
+			self:LoadSavedGroups(self.tSavedGroups[tParentData.sName])
 		end
 		wHandler:GetParent():Destroy()
 	end
