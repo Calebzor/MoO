@@ -5,18 +5,19 @@
 
 --[[-------------------------------------------------------------------------------------------
 TODO:
+	track and display if an interrupt hit during a cast
+
 	when syncing groups, the group containers should be resized and repositioned to an already saved place if possible
 		-- possibly by only allowing saved setups to be synced
 		-- and then using that offsetdata to restore position
 
 	let others know when someone in the group changes LAS in a way that he/she looses/gains an interrupt ability
 
+	have a one button setup for raids for class based groups
 	have a one button setup for like 5 man dungeons
 	only show my group option
 
 	notification window when receiving group sync so people know the windows are on top of each other in case of multiple groups
-
-	fix so synced bar updates update every groups bar, basically sync ability CDs not bars.
 
 	hook into bossmods
 ]]---------------------------------------------------------------------------------------------
@@ -45,6 +46,7 @@ local ICCommLib = ICCommLib
 local AbilityBook = AbilityBook
 local CColor = CColor
 local Tooltip = Tooltip
+local Print = Print
 local Event_FireGenericEvent = Event_FireGenericEvent
 local _ = _
 
@@ -829,9 +831,7 @@ function addon:OnCommMessage(channel, tMsg)
 	if channel ~= self.CommChannel then return nil end
 
 	if tMsg.type == "barupdate" then
-		-- tBarData[tBar.nSpellId] = {sMemberName = tMemberData.name, nProgress = nRemainingCD, nCD = nCD}
 		for nSpellId, tAbilityData in pairs(tMsg.tBarData) do
-			--D(nSpellId)
 			for sGroupName, tGroupData in pairs(self.tGroups) do
 				for nMemberIndexInGroup, tMemberData in pairs(self.tGroups[sGroupName].BarContainers) do
 					for nBarIndex, tBar in pairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
@@ -841,10 +841,6 @@ function addon:OnCommMessage(channel, tMsg)
 					end
 				end
 			end
-
-			--if self.tGroups[tBarData.sGroupName] and self.tGroups[tBarData.sGroupName].BarContainers[nMemberIndexInGroup] and self.tGroups[tBarData.sGroupName].BarContainers[nMemberIndexInGroup].bars[tBarData.nBarIndex] then
-			--	self.tGroups[tBarData.sGroupName].BarContainers[nMemberIndexInGroup].bars[tBarData.nBarIndex].frame:SetProgress(tBarData.nProgress)
-			--end
 		end
 	elseif tMsg.type == "RequestPartyLASInterrupts" then
 		D("LAS request received")
@@ -909,15 +905,15 @@ do
 		if not self.bVersionCheckAllowed then return end -- lets not allow spamming
 		self.bVersionCheckAllowed = false
 		self.tVersionData = {}
+		self:SendCommMessage({type = "RequestVersionCheck"})
 		self.tVersionData[#self.tVersionData+1] = { sName = self.uPlayer:GetName(), nVersionNumber = nVersionNumber}
 		if not bTimerExists then
 			Apollo.RegisterTimerHandler("DelayedPrint", "DelayedPrint", self)
-			Apollo.CreateTimer("DelayedPrint", 2, false)
+			Apollo.CreateTimer("DelayedPrint", 4, false)
 			bTimerExists = true
 		else
 			Apollo.StartTimer("DelayedPrint")
 		end
-		self:SendCommMessage({type = "RequestVersionCheck"})
 	end
 	function addon:DelayedPrint()
 		table.sort(self.tVersionData, function( a,b ) return a.sName > b.sName end)
