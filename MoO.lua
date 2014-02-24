@@ -5,6 +5,10 @@
 
 --[[-------------------------------------------------------------------------------------------
 TODO:
+	when syncing groups, the group containers should be resized and repositioned to an already saved place if possible
+		-- possibly by only allowing saved setups to be synced
+		-- and then using that offsetdata to restore position
+
 	let others know when someone in the group changes LAS in a way that he/she looses/gains an interrupt ability
 
 	have a one button setup for like 5 man dungeons
@@ -723,17 +727,19 @@ function addon:OnOneSecTimer()
 			if self.uPlayer and tMemberData.name == self.uPlayer:GetName() then
 				local tBarData = {}
 				for nBarIndex, tBar in ipairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
-					local spellObject = GameLib.GetSpell(tBar.nSpellId)
-					local nCD, nRemainingCD = spellObject:GetCooldownTime(), spellObject:GetCooldownRemaining()
-					if nRemainingCD and nRemainingCD > 0 then
-						tBar.frame:SetProgress(nRemainingCD)
-						tBarData[nBarIndex] = {sGroupName = sGroupName, sMemberName = tMemberData.name, nBarIndex = nBarIndex, nProgress = nRemainingCD}
-					else
-						tBar.frame:SetProgress(nCD)
-						tBarData[nBarIndex] = {sGroupName = sGroupName, sMemberName = tMemberData.name, nBarIndex = nBarIndex, nProgress = nCD}
+					if not tBarData[tBar.nSpellId] then -- no need to overwrite ability data
+						local spellObject = GameLib.GetSpell(tBar.nSpellId)
+						local nCD, nRemainingCD = spellObject:GetCooldownTime(), spellObject:GetCooldownRemaining()
+						if nRemainingCD and nRemainingCD > 0 then
+							tBar.frame:SetProgress(nRemainingCD)
+							tBarData[tBar.nSpellId] = {sMemberName = tMemberData.name, nProgress = nRemainingCD, nCD = nCD}
+						else
+							tBar.frame:SetProgress(nCD)
+							tBarData[tBar.nSpellId] = {sMemberName = tMemberData.name, nProgress = nCD, nCD = nCD}
+						end
 					end
 				end
-				self:SendCommMessage({type = "barupdate", tBarData = tBarData,}) -- use a single message to transmit all player bar data
+				self:SendCommMessage({type = "barupdate", tBarData = tBarData}) -- use a single message to transmit all player bar data
 			end
 		end
 	end
@@ -745,8 +751,6 @@ function addon:BarUpdater()
 	for sGroupName, tGroupData in pairs(self.tGroups) do
 		for nMemberIndexInGroup, tMemberData in pairs(self.tGroups[sGroupName].BarContainers) do
 			for nBarIndex, tBar in pairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
-
-
 			-- XXX there is something wrong with time based bar accuraccy, should probably sync bar progress every couple of sec to make sure it is accurate
 
 				-- for certain abilities just starting a timer is not good enough because there are AMPs for example that make the cooldown complete faster
@@ -783,6 +787,7 @@ function addon:BarUpdater()
 		end
 	end
 end
+
 function addon:SetGroupChannel(sGroupLeader)
 	local sNewChannel = string.format("Moo_%s%s", sGroupLeader, string.reverse(sGroupLeader))
 
@@ -824,11 +829,22 @@ function addon:OnCommMessage(channel, tMsg)
 	if channel ~= self.CommChannel then return nil end
 
 	if tMsg.type == "barupdate" then
-		for nBarIndex, tBarData in ipairs(tMsg.tBarData) do
-			local nMemberIndexInGroup = getMemberOfGroupIndex(tBarData.sGroupName, tBarData.sMemberName)
-			if self.tGroups[tBarData.sGroupName] and self.tGroups[tBarData.sGroupName].BarContainers[nMemberIndexInGroup] and self.tGroups[tBarData.sGroupName].BarContainers[nMemberIndexInGroup].bars[tBarData.nBarIndex] then
-				self.tGroups[tBarData.sGroupName].BarContainers[nMemberIndexInGroup].bars[tBarData.nBarIndex].frame:SetProgress(tBarData.nProgress)
+		-- tBarData[tBar.nSpellId] = {sMemberName = tMemberData.name, nProgress = nRemainingCD, nCD = nCD}
+		for nSpellId, tAbilityData in pairs(tMsg.tBarData) do
+			--D(nSpellId)
+			for sGroupName, tGroupData in pairs(self.tGroups) do
+				for nMemberIndexInGroup, tMemberData in pairs(self.tGroups[sGroupName].BarContainers) do
+					for nBarIndex, tBar in pairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
+						if self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nBarIndex].nSpellId == nSpellId then
+							self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nBarIndex].frame:SetProgress(tAbilityData.nProgress)
+						end
+					end
+				end
 			end
+
+			--if self.tGroups[tBarData.sGroupName] and self.tGroups[tBarData.sGroupName].BarContainers[nMemberIndexInGroup] and self.tGroups[tBarData.sGroupName].BarContainers[nMemberIndexInGroup].bars[tBarData.nBarIndex] then
+			--	self.tGroups[tBarData.sGroupName].BarContainers[nMemberIndexInGroup].bars[tBarData.nBarIndex].frame:SetProgress(tBarData.nProgress)
+			--end
 		end
 	elseif tMsg.type == "RequestPartyLASInterrupts" then
 		D("LAS request received")
