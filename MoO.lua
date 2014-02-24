@@ -731,17 +731,17 @@ function addon:OnOneSecTimer()
 				for nBarIndex, tBar in ipairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
 					if not tBarData[tBar.nSpellId] then -- no need to overwrite ability data
 						local spellObject = GameLib.GetSpell(tBar.nSpellId)
-						local nCD, nRemainingCD = spellObject:GetCooldownTime(), spellObject:GetCooldownRemaining()
+						local nCD, nRemainingCD = floor(spellObject:GetCooldownTime()), floor(spellObject:GetCooldownRemaining())
 						if nRemainingCD and nRemainingCD > 0 then
 							tBar.frame:SetProgress(nRemainingCD)
-							tBarData[tBar.nSpellId] = {sMemberName = tMemberData.name, nProgress = nRemainingCD, nCD = nCD}
+							tBarData[tBar.nSpellId] = {tMemberData.name, nRemainingCD}
 						else
 							tBar.frame:SetProgress(nCD)
-							tBarData[tBar.nSpellId] = {sMemberName = tMemberData.name, nProgress = nCD, nCD = nCD}
+							tBarData[tBar.nSpellId] = {tMemberData.name, nCD}
 						end
 					end
 				end
-				self:SendCommMessage({type = "barupdate", tBarData = tBarData}) -- use a single message to transmit all player bar data
+				self:SendCommMessage(tBarData) -- use a single message to transmit all player bar data
 			end
 		end
 	end
@@ -830,13 +830,16 @@ end
 function addon:OnCommMessage(channel, tMsg)
 	if channel ~= self.CommChannel then return nil end
 
-	if tMsg.type == "barupdate" then
-		for nSpellId, tAbilityData in pairs(tMsg.tBarData) do
-			for sGroupName, tGroupData in pairs(self.tGroups) do
-				for nMemberIndexInGroup, tMemberData in pairs(self.tGroups[sGroupName].BarContainers) do
-					for nBarIndex, tBar in pairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
-						if self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nBarIndex].nSpellId == nSpellId then
-							self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nBarIndex].frame:SetProgress(tAbilityData.nProgress)
+	if not tMsg.type then -- bar update
+		-- all for performance and reduce network traffic so every other comm message has to have a type
+		for nSpellId, tAbilityData in pairs(tMsg) do
+			if type(nSpellId) == "number" and type(tAbilityData[1]) == "string" and type(tAbilityData[2]) == "number" then -- do some type checking at least to try and prevent some errors in case a typeless message (malformed) one gets through somehow
+				for sGroupName, tGroupData in pairs(self.tGroups) do
+					for nMemberIndexInGroup, tMemberData in pairs(self.tGroups[sGroupName].BarContainers) do
+						for nBarIndex, tBar in pairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
+							if self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nBarIndex].nSpellId == nSpellId then
+								self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nBarIndex].frame:SetProgress(tAbilityData[2])
+							end
 						end
 					end
 				end
