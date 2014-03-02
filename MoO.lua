@@ -90,6 +90,12 @@ function addon:new(o)
 	self.uPlayer = nil
 	self.sChannelName = nil
 
+	self.tColors = {
+		cBG = {r=1,g=1,b=1,a=1},
+		cProgress = {r=1,g=1,b=1,a=1},
+		cFull = {r=1,g=1,b=1,a=1}
+	}
+
 	self.bAllGroupsLocked = nil
 	self.tVersionData = {}
 	self.bVersionCheckAllowed = true
@@ -135,6 +141,11 @@ end
 
 function addon:DelayedInit()
 	self.uPlayer = GameLib.GetPlayerUnit()
+
+	if self.tActiveGroupData and GroupLib.InGroup() then
+		self:LoadSavedGroups(self.tActiveGroupData)
+	end
+
 --	self.tCurrLAS = ActionSetLib.GetCurrentActionSet() -- this should be only done on LAS change
 	--testmoo()
 
@@ -166,6 +177,39 @@ local function getMemberOfGroupIndex(sGroupName, sMemberName)
 	end
 	return false
 end
+
+-----------------------------------------------------------------------------------------------
+-- Color stuff
+-----------------------------------------------------------------------------------------------
+
+local function CColorToTable(tColor)
+	return { r = tColor.r, g = tColor.g, b = tColor.b, a = tColor.a }
+end
+
+local function TableToCColor(tColor)
+	return CColor.new(tColor.r, tColor.g, tColor.b, tColor.a)
+end
+
+local function colorCallback(tData)
+	addon.tColors[tData.sName] = CColorToTable(tData.cColor)
+	for sGroupName, tGroupData in pairs(addon.tGroups) do
+		for nMemberIndexInGroup, tMemberData in pairs(addon.tGroups[sGroupName].BarContainers) do
+			for nBarIndex, tBar in pairs(addon.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
+				if tData.sName == "cBG" then
+					tBar.frame:SetBGColor(tData.cColor)
+				elseif tData.sName == "cFull" then
+					tBar.frame:SetBarColor(tData.cColor)
+				end
+			end
+		end
+	end
+end
+
+function addon:OnChangeColor(wHandler)
+	local color = TableToCColor(self.tColors[wHandler:GetName()])
+	ColorPicker.AdjustCColor(color, true, colorCallback, {cColor = color, sName = wHandler:GetName()})
+end
+
 -----------------------------------------------------------------------------------------------
 -- MoO Functions
 -----------------------------------------------------------------------------------------------
@@ -388,8 +432,8 @@ function addon:AddBarToMemberInGroup(sGroupName, sMemberName, nSpellId, nMax)
 		self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars] = {}
 		self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars].frame = Apollo.LoadForm("MoO.xml", "Bar", self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].frame, self)
 
-		--self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars].frame:SetBarColor(hexToCColor("EEEEEE", 0.5))    -- XXX fix these colors
-		--self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars].frame:SetBGColor(hexToCColor("FFFFFF", 0.5))     -- XXX fix these colors
+		self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars].frame:SetBarColor(TableToCColor(self.tColors.cFull))
+		self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars].frame:SetBGColor(TableToCColor(self.tColors.cBG))
 
 		self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars].nSpellId = nSpellId -- this can be a spellId or just a text
 		if not nMax then nMax = floor(GameLib.GetSpell(nSpellId):GetCooldownTime()) end -- floor because sometimes you get values like 40.00000000000001 which is not so nice
@@ -522,8 +566,8 @@ function addon:CopyGroupButton()
 					self.tGroups[sNewGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars] = {}
 					self.tGroups[sNewGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars].frame = Apollo.LoadForm("MoO.xml", "Bar", self.tGroups[sNewGroupName].BarContainers[nMemberIndexInGroup].frame, self)
 
-					--self.tGroups[sNewGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars].frame:SetBarColor(hexToCColor("EEEEEE", 0.5))    -- XXX fix these colors
-					--self.tGroups[sNewGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars].frame:SetBGColor(hexToCColor("FFFFFF", 0.5))     -- XXX fix these colors
+					self.tGroups[sNewGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars].frame:SetBarColor(TableToCColor(self.tColors.cFull))
+					self.tGroups[sNewGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars].frame:SetBGColor(TableToCColor(self.tColors.cBG))
 
 					self.tGroups[sNewGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars].nSpellId = tBar.nSpellId -- this can be a spellId or just a text
 					self.tGroups[sNewGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars].nMax = tBar.nMax
@@ -563,7 +607,7 @@ end
 
 function addon:OnSlashCommand(_, input)
 	if input then
-		if input == "config" then
+		if input:find("config") then
 			self:Options()
 		end
 	end
@@ -733,9 +777,11 @@ function addon:OnOneSecTimer()
 						local spellObject = GameLib.GetSpell(tBar.nSpellId)
 						local nCD, nRemainingCD = floor(spellObject:GetCooldownTime()), floor(spellObject:GetCooldownRemaining())
 						if nRemainingCD and nRemainingCD > 0 then
+							tBar.frame:SetBarColor(TableToCColor(self.tColors.cProgress))
 							tBar.frame:SetProgress(nRemainingCD)
 							tBarData[tBar.nSpellId] = {tMemberData.name, nRemainingCD}
 						else
+							tBar.frame:SetBarColor(TableToCColor(self.tColors.cFull))
 							tBar.frame:SetProgress(nCD)
 							tBarData[tBar.nSpellId] = {tMemberData.name, nCD}
 						end
@@ -836,9 +882,16 @@ function addon:OnCommMessage(channel, tMsg)
 			if type(nSpellId) == "number" and type(tAbilityData[1]) == "string" and type(tAbilityData[2]) == "number" then -- do some type checking at least to try and prevent some errors in case a typeless message (malformed) one gets through somehow
 				for sGroupName, tGroupData in pairs(self.tGroups) do
 					for nMemberIndexInGroup, tMemberData in pairs(self.tGroups[sGroupName].BarContainers) do
-						for nBarIndex, tBar in pairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
-							if self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nBarIndex].nSpellId == nSpellId then
-								self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nBarIndex].frame:SetProgress(tAbilityData[2])
+						if self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].name == tAbilityData[1] then
+							for nBarIndex, tBar in pairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
+								if self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nBarIndex].nSpellId == nSpellId then
+									if tAbilityData[2] == self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nBarIndex].nMax then
+										self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nBarIndex].frame:SetBarColor(TableToCColor(self.tColors.cFull))
+									else
+										self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nBarIndex].frame:SetBarColor(TableToCColor(self.tColors.cProgress))
+									end
+									self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nBarIndex].frame:SetProgress(tAbilityData[2])
+								end
 							end
 						end
 					end
@@ -1042,16 +1095,30 @@ end
 
 function addon:OnRestore(eLevel, tDB)
 	if eLevel ~= GameLib.CodeEnumAddonSaveLevel.General then return end
-	self.bAcceptGroupSync = tDB.bAcceptGroupSync
 
-	--D(tDB.tActiveGroupData)
-	if tDB.tActiveGroupData then
-		addon:LoadSavedGroups(tDB.tActiveGroupData)
+	if tDB.tColors then
+		if tDB.tColors.cBG then
+			self.tColors.cBG = tDB.tColors.cBG
+		end
+		if tDB.tColors.cFull then
+			self.tColors.cFull = tDB.tColors.cFull
+		end
+		if tDB.tColors.cProgress then
+			self.tColors.cProgress = tDB.tColors.cProgress
+		end
 	end
 
+	self.bAcceptGroupSync = tDB.bAcceptGroupSync
+
+	self.tActiveGroupData = tDB.tActiveGroupData
+
 	self.tSavedGroups = tDB.tSavedGroups
+
+	Apollo.RegisterTimerHandler("DelayedInit", "DelayedInit", self)
+
 	--D(self.tSavedGroups)
 	-- XXX debug
+
 
 	self:OnSlashCommand(_, "config")
 end
@@ -1059,6 +1126,8 @@ end
 function addon:OnSave(eLevel)
 	if eLevel ~= GameLib.CodeEnumAddonSaveLevel.General then return end -- save on the widest level so data is accessible across everything
 	local tDB = {}
+
+	tDB.tColors = self.tColors
 
 	tDB.bAcceptGroupSync = self.bAcceptGroupSync
 
