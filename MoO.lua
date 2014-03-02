@@ -7,10 +7,6 @@
 TODO:
 	track and display if an interrupt hit during a cast
 
-	when syncing groups, the group containers should be resized and repositioned to an already saved place if possible
-		-- possibly by only allowing saved setups to be synced
-		-- and then using that offsetdata to restore position
-
 	let others know when someone in the group changes LAS in a way that he/she looses/gains an interrupt ability
 
 	have a one button setup for raids for class based groups
@@ -851,26 +847,6 @@ end
 
 function addon:OnAllowGroupSyncButton(wHandler)
 	self.bAcceptGroupSync = wHandler:IsChecked()
-	D(self.bAcceptGroupSync)
-end
-
-function addon:SendGroups()
-	local tData = {}
-	for sGroupName, tGroupData in pairs(self.tGroups) do
-		tData[sGroupName] = {}
-		for nMemberIndexInGroup, tMemberData in pairs(self.tGroups[sGroupName].BarContainers) do
-			tData[sGroupName][nMemberIndexInGroup] = {}
-			tData[sGroupName][nMemberIndexInGroup].name = tMemberData.name
-			tData[sGroupName][nMemberIndexInGroup].tBars = {}
-			for nBarIndex, tBar in pairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
-				tData[sGroupName][nMemberIndexInGroup].tBars[nBarIndex] = {}
-				tData[sGroupName][nMemberIndexInGroup].tBars[nBarIndex].nSpellId = tBar.nSpellId
-				tData[sGroupName][nMemberIndexInGroup].tBars[nBarIndex].nMax = tBar.nMax
-			end
-		end
-	end
-
-	self:SendCommMessage({type = "GroupSync", tGroupData = tData})
 end
 
 function addon:OnCommMessage(channel, tMsg)
@@ -899,7 +875,6 @@ function addon:OnCommMessage(channel, tMsg)
 			end
 		end
 	elseif tMsg.type == "RequestPartyLASInterrupts" then
-		D("LAS request received")
 		self:MyLASInterrupts()
 	elseif tMsg.type == "LASInterrupts" then
 		tPartyLASInterrupts[tMsg.sMemberName] = tMsg.tSpellIds
@@ -910,18 +885,63 @@ function addon:OnCommMessage(channel, tMsg)
 	elseif tMsg.type == "GroupSync" and self.bAcceptGroupSync then
 		-- destroy what we have so we can start fresh
 		--D(tMsg.tGroupData)
-		for sGroupName, _  in pairs(self.tGroups) do
-			self.tGroups[sGroupName].GroupContainer:Destroy()
-			self.tGroups[sGroupName] = nil
+		local bSavedSetupFound
+		for sSetupName, _ in pairs(self.tSavedGroups) do
+			if sSetupName == tMsg.sName then
+				bSavedSetupFound = true
+			end
 		end
-		for sGroupName, tGroupData in pairs(tMsg.tGroupData) do
-			for nMemberIndexInGroup, tMemberData in ipairs(tGroupData) do
-				for nBarIndex, tBar in ipairs(tMemberData.tBars) do
-					self:AddToGroup(sGroupName, tMemberData.name, tBar.nSpellId, tBar.nMax)
+		if bSavedSetupFound then
+			local wPopUp = Apollo.LoadForm("MoO.xml", "GenericConfirmationWindow", nil, self)
+			wPopUp:SetStyle("Escapable", true)
+			wPopUp:SetData({ type = "PopUp"})
+			wPopUp:FindChild("Title"):SetText("Notification")
+			wPopUp:FindChild("HelpText"):SetText(("You've just received a group setup named: <%s> from %s. We've found a setup with that name in the databas so loaded the layout as far as we could, but don't forget to overwrite this save once you are done setting up the group window positions so the latest layout gets saved."):format(tMsg.sName, tMsg.sSender))
+			wPopUp:FindChild("Yes"):SetText("OK")
+			wPopUp:FindChild("No"):SetText("Close")
+
+			for sGroupName, _  in pairs(self.tGroups) do
+				self.tGroups[sGroupName].GroupContainer:Destroy()
+				self.tGroups[sGroupName] = nil
+			end
+			for sGroupName, tGroupData in pairs(tMsg.tGroupData) do
+				for nMemberIndexInGroup, tMemberData in ipairs(tGroupData) do
+					for nBarIndex, tBar in ipairs(tMemberData.tBars) do
+						local bLocked
+						if self.tSavedGroups[tMsg.sName][sGroupName] and self.tSavedGroups[tMsg.sName][sGroupName].bLocked then
+							bLocked = true
+						end
+						self:AddToGroup(sGroupName, tMemberData.name, tBar.nSpellId, tBar.nMax, not bLocked)
+					end
+					if #tGroupData > 0 then -- not an empty group (retard check?)
+						if self.tSavedGroups[tMsg.sName][sGroupName] and self.tSavedGroups[tMsg.sName][sGroupName].tAnchorOffsets then
+							self:RedrawGroup(sGroupName, self.tSavedGroups[tMsg.sName][sGroupName].tAnchorOffsets)
+						end
+					end
+				end
+				self:OnLockGroupButton(self.tGroups[sGroupName].GroupContainer:FindChild("Lock"))
+			end
+		else
+			local wPopUp = Apollo.LoadForm("MoO.xml", "GenericConfirmationWindow", nil, self)
+			wPopUp:SetStyle("Escapable", true)
+			wPopUp:SetData({ type = "PopUp"})
+			wPopUp:FindChild("Title"):SetText("Notification")
+			wPopUp:FindChild("HelpText"):SetText(("You've just received a group setup named: <%s> from %s. Couldn't find a setup with that name in the database so we made an initial save. Don't forget to overwrite this save once you are done setting up the group window positions."):format(tMsg.sName, tMsg.sSender))
+			wPopUp:FindChild("Yes"):SetText("OK")
+			wPopUp:FindChild("No"):SetText("Close")
+
+			for sGroupName, _  in pairs(self.tGroups) do
+				self.tGroups[sGroupName].GroupContainer:Destroy()
+				self.tGroups[sGroupName] = nil
+			end
+			for sGroupName, tGroupData in pairs(tMsg.tGroupData) do
+				for nMemberIndexInGroup, tMemberData in ipairs(tGroupData) do
+					for nBarIndex, tBar in ipairs(tMemberData.tBars) do
+						self:AddToGroup(sGroupName, tMemberData.name, tBar.nSpellId, tBar.nMax)
+					end
 				end
 			end
 		end
-
 	end
 end
 
@@ -986,7 +1006,24 @@ do
 	end
 end
 
+function addon:SendGroups(sName)
+	local tData = {}
+	for sGroupName, tGroupData in pairs(self.tGroups) do
+		tData[sGroupName] = {}
+		for nMemberIndexInGroup, tMemberData in pairs(self.tGroups[sGroupName].BarContainers) do
+			tData[sGroupName][nMemberIndexInGroup] = {}
+			tData[sGroupName][nMemberIndexInGroup].name = tMemberData.name
+			tData[sGroupName][nMemberIndexInGroup].tBars = {}
+			for nBarIndex, tBar in pairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
+				tData[sGroupName][nMemberIndexInGroup].tBars[nBarIndex] = {}
+				tData[sGroupName][nMemberIndexInGroup].tBars[nBarIndex].nSpellId = tBar.nSpellId
+				tData[sGroupName][nMemberIndexInGroup].tBars[nBarIndex].nMax = tBar.nMax
+			end
+		end
+	end
 
+	self:SendCommMessage({type = "GroupSync", tGroupData = tData, sName = sName, sSender = self.uPlayer:GetName()})
+end
 
 -----------------------------------------------------------------------------------------------
 -- Saving/Loading/Deleting Groups
@@ -1006,7 +1043,14 @@ function addon:OnSetupButton(wHandler)
 		wConfirm:FindChild("HelpText"):SetText(("Loading a group setup discards the current group setup. If the current group setup is not saved already then it'll be lost. Load <%s> anyways?"):format(sSetupNameToLoad))
 	elseif sButtonName:find("Delete") then
 		self.tSavedGroups[wHandler:GetParent():FindChild("MainButton"):GetText()] = nil
-		wHandler:GetParent():FindChild("MainButton"):SetText("Click ot select a setup")
+		wHandler:GetParent():FindChild("MainButton"):SetText("Click to select a setup")
+	elseif sButtonName:find("SendGroups") then
+		if self.wSaveGroups then self.wSaveGroups:Destroy() end -- start over
+		self.wSaveGroups = Apollo.LoadForm("MoO.xml", "SaveGroupSetup", nil, self)
+		self.wSaveGroups:SetData({bSend = true})
+		self.wSaveGroups:FindChild("Title"):SetText("Save and send groups")
+		self.wSaveGroups:FindChild("HelpText"):SetText("Before you can send the group you have to save it first. Name of the group setup for the database")
+		self.wSaveGroups:Show(true)
 	end
 end
 
@@ -1014,13 +1058,19 @@ function addon:OnSaveGroupsCloseButtons(wHandler)
 	if wHandler:GetName() == "Discard" then wHandler:GetParent():Destroy() return end -- close
 
 	local sName = wHandler:GetParent():FindChild("EditBox"):GetText()
+	local tData = wHandler:GetParent():GetData()
+	local bSend
+	if tData and tData.bSend then bSend = true end
 
 	if not self.tSavedGroups[sName] then
 		self:SaveGroups(sName)
+		if bSend then
+			self:SendGroups(sName)
+		end
 		wHandler:GetParent():Destroy()
 	else
 		local wConfirm = Apollo.LoadForm("MoO.xml", "GenericConfirmationWindow", nil, self)
-		wConfirm:SetData({ type = "ConfirmSetupOverwrite", sName = sName})
+		wConfirm:SetData({ type = "ConfirmSetupOverwrite", sName = sName, bSend = bSend})
 		wConfirm:FindChild("Title"):SetText("Confirm overwrite")
 		wConfirm:FindChild("HelpText"):SetText("That name already exists in the database. Do you want to overwrite it?")
 	end
@@ -1039,6 +1089,9 @@ function addon:OnGenericButton(wHandler)
 	if tParentData.type == "ConfirmSetupOverwrite" then
 		if wHandler:GetName() == "Yes" then
 			self:SaveGroups(tParentData.sName)
+			if tParentData.bSend then
+				self:SendGroups(tParentData.sName)
+			end
 			self.wSaveGroups:Destroy()
 		end
 		wHandler:GetParent():Destroy()
@@ -1046,6 +1099,8 @@ function addon:OnGenericButton(wHandler)
 		if wHandler:GetName() == "Yes" and self.tSavedGroups[tParentData.sName] then
 			self:LoadSavedGroups(self.tSavedGroups[tParentData.sName])
 		end
+		wHandler:GetParent():Destroy()
+	elseif tParentData.type == "PopUp" then
 		wHandler:GetParent():Destroy()
 	end
 end
@@ -1118,8 +1173,6 @@ function addon:OnRestore(eLevel, tDB)
 
 	--D(self.tSavedGroups)
 	-- XXX debug
-
-
 	self:OnSlashCommand(_, "config")
 end
 
