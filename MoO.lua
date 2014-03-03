@@ -36,6 +36,7 @@ local tonumber = tonumber
 local floor = math.floor
 local Apollo = Apollo
 local ActionSetLib = ActionSetLib
+local CombatFloater = CombatFloater
 local GameLib = GameLib
 local GroupLib = GroupLib
 local ICCommLib = ICCommLib
@@ -117,6 +118,9 @@ function addon:OnLoad()
 	Apollo.RegisterEventHandler("Group_Updated", "OnGroupUpdated", self)
 	Apollo.RegisterEventHandler("SpecChanged", "OnSpecChanged", self)
 
+	Apollo.RegisterEventHandler("CombatLogCCState", "OnCombatLogCCState", self)
+	Apollo.RegisterEventHandler("CombatLogInterrupted", "OnCombatLogInterrupted", self)
+
 	--self.wAbility = Apollo.LoadForm("MoO.xml", "TempAbilityWindow", nil, self)
 
 	--Apollo.CreateTimer("UpdateBarTimer", self.nBarTimeIncrement, true)
@@ -133,6 +137,49 @@ function addon:OnLoad()
 	-- XXX debug
 
 
+end
+--[[
+  CombatFloater = <20>{
+    AddDigitSpriteSet = <function 202>,
+    AddTextBGSprite = <function 203>,
+    CodeEnumCCStateApplyRulesResult = {
+      DiminishingReturns_TriggerCap = 9,
+      InvalidCCState = 1,
+      NoTargetSpecified = 2,
+      Ok = 0,
+      Stacking_DoesNotStack = 7,
+      Stacking_ShorterDuration = 8,
+      Target_Immune = 3,
+      Target_InfiniteInterruptArmor = 4,
+      Target_InterruptArmorBlocked = 6,
+      Target_InterruptArmorReduced = 5
+    },
+]]--
+
+function addon:UpdateCastInfoForAbility(sSpellName, sText)
+	for sGroupName, tGroupData in pairs(self.tGroups) do
+		for nMemberIndexInGroup, tMemberData in pairs(self.tGroups[sGroupName].BarContainers) do
+			for nBarIndex, tBar in pairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
+				if GameLib.GetSpell(tBar.nSpellId):GetName() == sSpellName then
+					tBar.frame:FindChild("CastInfo"):SetText(sText)
+				end
+			end
+		end
+	end
+end
+
+
+function addon:OnCombatLogCCState(tEventArgs)
+	if tEventArgs.eResult == CombatFloater.CodeEnumCCStateApplyRulesResult.Target_InterruptArmorReduced and tEventArgs.unitTarget:IsCasting() then -- 5 -- interrupt armor reduced while a cast was ongoing
+		self:UpdateCastInfoForAbility(tEventArgs.splCallingSpell:GetName(), ("-%d IA during %s cast"):format(tEventArgs.nInterruptArmorHit, tEventArgs.unitTarget:GetCastName()))
+		self:SendCommMessage({type = "CCState", nSpellId = tEventArgs.splCallingSpell:GetId(), nInterruptArmorHit = tEventArgs.nInterruptArmorHit, cast = tEventArgs.unitTarget:GetCastName()}) -- we send spellId due to future localization concerns, this adds extra work but will help in the future, -- XXX except for CastName cuz there is not CastId yet :S
+	end
+end
+
+
+function addon:OnCombatLogInterrupted(tEventArgs)
+	self:UpdateCastInfoForAbility(tEventArgs.splInterruptingSpell:GetName(), ("Interrupted: %s"):format(tEventArgs.splCallingSpell:GetName()))
+	self:SendCommMessage({type = "Interrupt", nSpellId = tEventArgs.splInterruptingSpell:GetId(), cast = tEventArgs.splCallingSpell:GetId()})
 end
 
 function addon:DelayedInit()
@@ -777,6 +824,7 @@ function addon:OnOneSecTimer()
 							tBar.frame:SetProgress(nRemainingCD)
 							tBarData[tBar.nSpellId] = {tMemberData.name, nRemainingCD}
 						else
+							tBar.frame:FindChild("CastInfo"):SetText("")
 							tBar.frame:SetBarColor(TableToCColor(self.tColors.cFull))
 							tBar.frame:SetProgress(nCD)
 							tBarData[tBar.nSpellId] = {tMemberData.name, nCD}
@@ -862,6 +910,7 @@ function addon:OnCommMessage(channel, tMsg)
 							for nBarIndex, tBar in pairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
 								if self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nBarIndex].nSpellId == nSpellId then
 									if tAbilityData[2] == self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nBarIndex].nMax then
+										self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nBarIndex].frame:FindChild("CastInfo"):SetText("")
 										self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nBarIndex].frame:SetBarColor(TableToCColor(self.tColors.cFull))
 									else
 										self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nBarIndex].frame:SetBarColor(TableToCColor(self.tColors.cProgress))
@@ -942,6 +991,10 @@ function addon:OnCommMessage(channel, tMsg)
 				end
 			end
 		end
+	elseif tMsg.type == "Interrupt" then
+		self:UpdateCastInfoForAbility(GameLib.GetSpell(tMsg.nSpellId):GetName(), ("Interrupted: %s"):format(GameLib.GetSpell(tMsg.cast):GetName()))
+	elseif tMsg.type == "CCState" then
+		self:UpdateCastInfoForAbility(GameLib.GetSpell(tMsg.nSpellId):GetName(), ("-%d IA during %s cast"):format(tMsg.nInterruptArmorHit, tMsg.cast))
 	end
 end
 
