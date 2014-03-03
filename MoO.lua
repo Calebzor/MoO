@@ -82,6 +82,8 @@ function addon:new(o)
 	self.nBarTimeIncrement = 0.033
 	self.tGroups = {}
 	self.tCurrLAS = nil
+	self.tLastLASInterrupts = nil
+	self.bAllowLASInterruptCheck = false
 	self.uPlayer = nil
 	self.sChannelName = nil
 
@@ -114,8 +116,6 @@ function addon:OnLoad()
 	Apollo.RegisterEventHandler("Group_Join", "OnGroupJoin", self)
 	Apollo.RegisterEventHandler("Group_Left", "OnGroupLeft", self)
 	Apollo.RegisterEventHandler("Group_Updated", "OnGroupUpdated", self)
-	Apollo.RegisterEventHandler("SpecChanged", "OnActionSetSwitched", self)
-	Apollo.RegisterEventHandler("AbilityWindowHasBeenClosed", "OnAbilityWindowHasBeenClosed", self)
 
 	Apollo.RegisterEventHandler("CombatLogCCState", "OnCombatLogCCState", self)
 	Apollo.RegisterEventHandler("CombatLogInterrupted", "OnCombatLogInterrupted", self)
@@ -142,19 +142,13 @@ end
 function addon:DelayedInit()
 	self.uPlayer = GameLib.GetPlayerUnit()
 
-	if self.tActiveGroupData and GroupLib.InGroup() then
-		self:LoadSavedGroups(self.tActiveGroupData)
-	end
-
---	self.tCurrLAS = ActionSetLib.GetCurrentActionSet() -- this should be only done on LAS change
-	--testmoo()
-
-	--self:AddToGroup("Group1", "Caleb", 32812, 35)
-	--self:AddToGroup("Group1", "RaidSlinger", 46160, 20)
-	--self:AddToGroup("Group1", "RaidSlinger", 34355, 30)
-	--self:ShowMemberButtons(nil, true, true)
-
-	if not self.uPlayer then
+	if self.uPlayer then -- bit hacky, but let's say if the player unit is present we can start working
+		if self.tActiveGroupData and GroupLib.InGroup() then
+			self:LoadSavedGroups(self.tActiveGroupData)
+		end
+		self.tLastLASInterrupts = self:MyLASInterrupts(true)
+		self.bAllowLASInterruptCheck = true
+	else
 		Apollo.CreateTimer("DelayedInit", 1, false)
 	end
 end
@@ -296,18 +290,6 @@ end
 -----------------------------------------------------------------------------------------------
 -- Event and button handlers
 -----------------------------------------------------------------------------------------------
-
-function addon:OnActionSetSwitched(newSpecIndex, specError)
-	D("poop")
-	if specError == AbilityBook.CodeEnumSpecError.Ok then
-		-- warns others that I have changed my LAS (obviously only if interrupt is added/removed)
-		D("poop")
-	end
-end
-
-function addon:OnAbilityWindowHasBeenClosed()
-	D("closed")
-end
 
 function addon:OnEditMemberButton(wHandler)
 	local sMemberName = wHandler:GetParent():GetData() and wHandler:GetParent():GetData().sMemberName
@@ -823,7 +805,49 @@ end
 -- Bar updating
 -----------------------------------------------------------------------------------------------
 
+do
+	local function oneSidedTableSpellMatchCheck(a, b)
+		for _, v in ipairs(a) do
+			local bMatch
+			for _, s in ipairs(b) do
+				if GameLib.GetSpell(v):GetName() == GameLib.GetSpell(s):GetName() then -- don't really care about tier changes just if someone gains or losses an interrupt (for now at least)
+					bMatch = true
+					break
+				end
+			end
+			if not bMatch then
+				return false
+			end
+		end
+		return true
+	end
+	function addon:LookForLASInterruptChange()
+		if not self.bAllowLASInterruptCheck then return end
+		local tCurrLASInterrupts = self:MyLASInterrupts(true)
+		if self.tLastLASInterrupts then
+			if (tCurrLASInterrupts and #tCurrLASInterrupts > 0) and #self.tLastLASInterrupts > 0 then
+				if not oneSidedTableSpellMatchCheck(tCurrLASInterrupts, self.tLastLASInterrupts) or not oneSidedTableSpellMatchCheck(self.tLastLASInterrupts, tCurrLASInterrupts) then
+					D("LASInterruptsChanged")
+					self:SendCommMessage({type = "LASInterruptsChanged", sPlayerName = self.uPlayer:GetName(), tLASInterrupts= tCurrLASInterrupts})
+					self:OnLASInterruptChanged(self.uPlayer:GetName(), tCurrLASInterrupts)
+				end
+			elseif #self.tLastLASInterrupts > 0 and not tCurrLASInterrupts then
+				D("new is no interrupt")
+			end
+		elseif (tCurrLASInterrupts and #tCurrLASInterrupts > 0) and not self.tLastLASInterrupts then
+			D("old is no interrupt")
+		end
+		self.tLastLASInterrupts = self:MyLASInterrupts(true)
+	end
+end
+
+function addon:OnLASInterruptChanged(sPlayerName, tLASInterrupts)
+	local sLostAbilities = ""
+
+end
+
 function addon:OnOneSecTimer()
+	self:LookForLASInterruptChange() -- this probably should be only done outside of combat however due to unitObjects missing :InCombat() check (should come Winter beta 3.5) we can live with this till now
 	for sGroupName, tGroupData in pairs(self.tGroups) do
 		for nMemberIndexInGroup, tMemberData in pairs(self.tGroups[sGroupName].BarContainers) do
 			if self.uPlayer and tMemberData.name == self.uPlayer:GetName() then
@@ -940,6 +964,8 @@ function addon:OnCommMessage(channel, tMsg)
 		self:MyLASInterrupts()
 	elseif tMsg.type == "LASInterrupts" then
 		tPartyLASInterrupts[tMsg.sMemberName] = tMsg.tSpellIds
+	elseif tMsg.type == "LASInterruptsChanged" then
+		self:OnLASInterruptChanged(tMsg.sPlayerName, tMsg.tLASInterrupts)
 	elseif tMsg.type == "RequestVersionCheck" then
 		self:SendCommMessage({type = "VersionCheckData", sMemberName = self.uPlayer:GetName(), nVersionNumber = nVersionNumber})
 	elseif tMsg.type == "VersionCheckData" then
