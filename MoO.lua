@@ -5,8 +5,6 @@
 
 --[[-------------------------------------------------------------------------------------------
 TODO:
-	track and display if an interrupt hit during a cast
-
 	let others know when someone in the group changes LAS in a way that he/she looses/gains an interrupt ability
 
 	have a one button setup for raids for class based groups
@@ -116,7 +114,8 @@ function addon:OnLoad()
 	Apollo.RegisterEventHandler("Group_Join", "OnGroupJoin", self)
 	Apollo.RegisterEventHandler("Group_Left", "OnGroupLeft", self)
 	Apollo.RegisterEventHandler("Group_Updated", "OnGroupUpdated", self)
-	Apollo.RegisterEventHandler("SpecChanged", "OnSpecChanged", self)
+	Apollo.RegisterEventHandler("SpecChanged", "OnActionSetSwitched", self)
+	Apollo.RegisterEventHandler("AbilityWindowHasBeenClosed", "OnAbilityWindowHasBeenClosed", self)
 
 	Apollo.RegisterEventHandler("CombatLogCCState", "OnCombatLogCCState", self)
 	Apollo.RegisterEventHandler("CombatLogInterrupted", "OnCombatLogInterrupted", self)
@@ -138,49 +137,7 @@ function addon:OnLoad()
 
 
 end
---[[
-  CombatFloater = <20>{
-    AddDigitSpriteSet = <function 202>,
-    AddTextBGSprite = <function 203>,
-    CodeEnumCCStateApplyRulesResult = {
-      DiminishingReturns_TriggerCap = 9,
-      InvalidCCState = 1,
-      NoTargetSpecified = 2,
-      Ok = 0,
-      Stacking_DoesNotStack = 7,
-      Stacking_ShorterDuration = 8,
-      Target_Immune = 3,
-      Target_InfiniteInterruptArmor = 4,
-      Target_InterruptArmorBlocked = 6,
-      Target_InterruptArmorReduced = 5
-    },
-]]--
 
-function addon:UpdateCastInfoForAbility(sSpellName, sText)
-	for sGroupName, tGroupData in pairs(self.tGroups) do
-		for nMemberIndexInGroup, tMemberData in pairs(self.tGroups[sGroupName].BarContainers) do
-			for nBarIndex, tBar in pairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
-				if GameLib.GetSpell(tBar.nSpellId):GetName() == sSpellName then
-					tBar.frame:FindChild("CastInfo"):SetText(sText)
-				end
-			end
-		end
-	end
-end
-
-
-function addon:OnCombatLogCCState(tEventArgs)
-	if tEventArgs.eResult == CombatFloater.CodeEnumCCStateApplyRulesResult.Target_InterruptArmorReduced and tEventArgs.unitTarget:IsCasting() then -- 5 -- interrupt armor reduced while a cast was ongoing
-		self:UpdateCastInfoForAbility(tEventArgs.splCallingSpell:GetName(), ("-%d IA during %s cast"):format(tEventArgs.nInterruptArmorHit, tEventArgs.unitTarget:GetCastName()))
-		self:SendCommMessage({type = "CCState", nSpellId = tEventArgs.splCallingSpell:GetId(), nInterruptArmorHit = tEventArgs.nInterruptArmorHit, cast = tEventArgs.unitTarget:GetCastName()}) -- we send spellId due to future localization concerns, this adds extra work but will help in the future, -- XXX except for CastName cuz there is not CastId yet :S
-	end
-end
-
-
-function addon:OnCombatLogInterrupted(tEventArgs)
-	self:UpdateCastInfoForAbility(tEventArgs.splInterruptingSpell:GetName(), ("Interrupted: %s"):format(tEventArgs.splCallingSpell:GetName()))
-	self:SendCommMessage({type = "Interrupt", nSpellId = tEventArgs.splInterruptingSpell:GetId(), cast = tEventArgs.splCallingSpell:GetId()})
-end
 
 function addon:DelayedInit()
 	self.uPlayer = GameLib.GetPlayerUnit()
@@ -289,11 +246,67 @@ function testmoo()
 	addon:ShowMemberButtons(nil, true, true)
 end
 
-function addon:OnSpecChanged(newSpecIndex, specError)
+-----------------------------------------------------------------------------------------------
+-- Cast Info stuff
+-----------------------------------------------------------------------------------------------
+
+function addon:UpdateCastInfoForAbility(sSpellName, sText)
+	for sGroupName, tGroupData in pairs(self.tGroups) do
+		for nMemberIndexInGroup, tMemberData in pairs(self.tGroups[sGroupName].BarContainers) do
+			for nBarIndex, tBar in pairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
+				if GameLib.GetSpell(tBar.nSpellId):GetName() == sSpellName then
+					tBar.frame:FindChild("CastInfo"):SetText(sText)
+				end
+			end
+		end
+	end
+end
+
+--[[
+  CombatFloater = <20>{
+    AddDigitSpriteSet = <function 202>,
+    AddTextBGSprite = <function 203>,
+    CodeEnumCCStateApplyRulesResult = {
+      DiminishingReturns_TriggerCap = 9,
+      InvalidCCState = 1,
+      NoTargetSpecified = 2,
+      Ok = 0,
+      Stacking_DoesNotStack = 7,
+      Stacking_ShorterDuration = 8,
+      Target_Immune = 3,
+      Target_InfiniteInterruptArmor = 4,
+      Target_InterruptArmorBlocked = 6,
+      Target_InterruptArmorReduced = 5
+    },
+]]--
+
+function addon:OnCombatLogCCState(tEventArgs)
+	if tEventArgs.eResult == CombatFloater.CodeEnumCCStateApplyRulesResult.Target_InterruptArmorReduced and tEventArgs.unitTarget:IsCasting() then -- 5 -- interrupt armor reduced while a cast was ongoing
+		self:UpdateCastInfoForAbility(tEventArgs.splCallingSpell:GetName(), ("-%d IA during %s cast"):format(tEventArgs.nInterruptArmorHit, tEventArgs.unitTarget:GetCastName()))
+		self:SendCommMessage({type = "CCState", nSpellId = tEventArgs.splCallingSpell:GetId(), nInterruptArmorHit = tEventArgs.nInterruptArmorHit, cast = tEventArgs.unitTarget:GetCastName()}) -- we send spellId due to future localization concerns, this adds extra work but will help in the future, -- XXX except for CastName cuz there is not CastId yet :S
+	end
+end
+
+
+function addon:OnCombatLogInterrupted(tEventArgs)
+	self:UpdateCastInfoForAbility(tEventArgs.splInterruptingSpell:GetName(), ("Interrupted: %s"):format(tEventArgs.splCallingSpell:GetName()))
+	self:SendCommMessage({type = "Interrupt", nSpellId = tEventArgs.splInterruptingSpell:GetId(), cast = tEventArgs.splCallingSpell:GetId()})
+end
+
+-----------------------------------------------------------------------------------------------
+-- Event and button handlers
+-----------------------------------------------------------------------------------------------
+
+function addon:OnActionSetSwitched(newSpecIndex, specError)
+	D("poop")
 	if specError == AbilityBook.CodeEnumSpecError.Ok then
 		-- warns others that I have changed my LAS (obviously only if interrupt is added/removed)
-
+		D("poop")
 	end
+end
+
+function addon:OnAbilityWindowHasBeenClosed()
+	D("closed")
 end
 
 function addon:OnEditMemberButton(wHandler)
@@ -990,6 +1003,7 @@ function addon:OnCommMessage(channel, tMsg)
 					end
 				end
 			end
+			self:SaveGroups(tMsg.sName)
 		end
 	elseif tMsg.type == "Interrupt" then
 		self:UpdateCastInfoForAbility(GameLib.GetSpell(tMsg.nSpellId):GetName(), ("Interrupted: %s"):format(GameLib.GetSpell(tMsg.cast):GetName()))
