@@ -5,8 +5,6 @@
 
 --[[-------------------------------------------------------------------------------------------
 TODO:
-	let others know when someone in the group changes LAS in a way that he/she looses/gains an interrupt ability
-
 	have a one button setup for raids for class based groups
 	have a one button setup for like 5 man dungeons
 	only show my group option
@@ -14,6 +12,15 @@ TODO:
 	notification window when receiving group sync so people know the windows are on top of each other in case of multiple groups
 
 	hook into bossmods
+
+<23:51:00> "Trasgress": Engineer bot, the LAS name is called Bruiser bot
+<23:51:15> "Trasgress": After you use it it summons a bot and gives you a reactive abilkity that has a 30s cd
+<23:51:41> "Trasgress": that ability name is [Bot Ability] Blitz
+<23:51:45> "Trasgress": interrupts and taunts
+<23:52:14> "Trasgress": http://i.imgur.com/7Pm82bW.png
+<23:52:19> "Trasgress": screenshot of the ability name
+
+
 ]]---------------------------------------------------------------------------------------------
 
 require "ActionSetLib"
@@ -49,7 +56,7 @@ local _ = _
 local MoO = {}
 local addon = MoO
 
-local nVersionNumber = "1"
+local nVersionNumber = "1.12"
 
 
 local function hexToCColor(color, a)
@@ -120,6 +127,9 @@ function addon:OnLoad()
 	Apollo.RegisterEventHandler("CombatLogCCState", "OnCombatLogCCState", self)
 	Apollo.RegisterEventHandler("CombatLogInterrupted", "OnCombatLogInterrupted", self)
 
+	Apollo.RegisterEventHandler("AbilityBookChange", "OnAbilityBookChange", self)
+
+
 	--self.wAbility = Apollo.LoadForm("MoO.xml", "TempAbilityWindow", nil, self)
 
 	--Apollo.CreateTimer("UpdateBarTimer", self.nBarTimeIncrement, true)
@@ -137,7 +147,6 @@ function addon:OnLoad()
 
 
 end
-
 
 function addon:DelayedInit()
 	self.uPlayer = GameLib.GetPlayerUnit()
@@ -276,8 +285,9 @@ end
 
 function addon:OnCombatLogCCState(tEventArgs)
 	if tEventArgs.eResult == CombatFloater.CodeEnumCCStateApplyRulesResult.Target_InterruptArmorReduced and tEventArgs.unitTarget:IsCasting() then -- 5 -- interrupt armor reduced while a cast was ongoing
-		self:UpdateCastInfoForAbility(tEventArgs.splCallingSpell:GetName(), ("-%d IA during %s cast"):format(tEventArgs.nInterruptArmorHit, tEventArgs.unitTarget:GetCastName()))
-		self:SendCommMessage({type = "CCState", nSpellId = tEventArgs.splCallingSpell:GetId(), nInterruptArmorHit = tEventArgs.nInterruptArmorHit, cast = tEventArgs.unitTarget:GetCastName()}) -- we send spellId due to future localization concerns, this adds extra work but will help in the future, -- XXX except for CastName cuz there is not CastId yet :S
+		local perc = floor(tEventArgs.unitTarget:GetCastElapsed()*100/tEventArgs.unitTarget:GetCastDuration())
+		self:UpdateCastInfoForAbility(tEventArgs.splCallingSpell:GetName(), ("-%d IA during %s%% %s cast"):format(tEventArgs.nInterruptArmorHit, perc, tEventArgs.unitTarget:GetCastName()))
+		self:SendCommMessage({type = "CCState", nSpellId = tEventArgs.splCallingSpell:GetId(), nInterruptArmorHit = tEventArgs.nInterruptArmorHit, perc = perc, cast = tEventArgs.unitTarget:GetCastName()}) -- we send spellId due to future localization concerns, this adds extra work but will help in the future, -- XXX except for CastName cuz there is not CastId yet :S
 	end
 end
 
@@ -391,10 +401,42 @@ function addon:OnMemberContainerClose(wHandler)
 	end
 end
 
+function addon:IsPlayerMemberOfGroup(sGroupNameToCheck)
+	local bMember
+	for sGroupName, tGroupData in pairs(self.tGroups) do
+		if sGroupName == sGroupNameToCheck then
+			for nMemberIndexInGroup, tMemberData in pairs(self.tGroups[sGroupName].BarContainers) do
+				if self.uPlayer:GetName() == tMemberData.name then
+					bMember = true
+				end
+			end
+		end
+	end
+	return bMember
+end
+
+function addon:HideGroupContainer(wHandler)
+	if self:IsPlayerMemberOfGroup(wHandler:GetParent():FindChild("GroupName"):GetText()) then
+		local wPopUp = Apollo.LoadForm("MoO.xml", "GenericConfirmationWindow", nil, self)
+		wPopUp:SetStyle("Escapable", true)
+		wPopUp:SetData({ type = "PopUp"})
+		wPopUp:FindChild("Title"):SetText("Warning")
+		wPopUp:FindChild("HelpText"):SetText("You can't hide a group that you are a member of!")
+		wPopUp:FindChild("Yes"):SetText("OK")
+		wPopUp:FindChild("No"):SetText("Close")
+	else
+		wHandler:GetParent():GetParent():Show(false)
+	end
+end
+
+
 
 function addon:OnLockGroupButton(wHandler)
 	if wHandler:GetName() == "LockUnlockAllGroupsButton" then
 		for _, v in pairs(self.tGroups) do
+			if not self.bAllGroupsLocked then
+				v.GroupContainer:Show(true)
+			end
 			v.GroupContainer:GetData().bLocked = self.bAllGroupsLocked
 			v.GroupContainer:FindChild("GroupConfigContainer"):Show(not self.bAllGroupsLocked)
 			v.GroupContainer:SetStyle("Moveable", not v.GroupContainer:GetData().bLocked)
@@ -629,18 +671,26 @@ function addon:DeleteGroupButton(wHandler)
 	end
 end
 
+function addon:OnCloseButton(wHandler)
+	wHandler:GetParent():Show(false)
+end
+
 function addon:Options()
-	if not self.wOptions then self.wOptions = Apollo.LoadForm("MoO.xml", "OptionsContainer", nil, self) end
+	if not self.wOptions then
+		self.wOptions = Apollo.LoadForm("MoO.xml", "OptionsContainer", nil, self)
 
-	local wDeleteGroupSelectorContainer = Apollo.LoadForm("MoO.xml", "DropDownWidget", self.wOptions:FindChild("DeleteGroupSelectorContainer"), self)
-	local wCopyGroupSelectorContainer = Apollo.LoadForm("MoO.xml", "DropDownWidget", self.wOptions:FindChild("CopyGroupSelectorContainer"), self)
-	wDeleteGroupSelectorContainer:FindChild("MainButton"):SetText("Click to select a group")
-	wCopyGroupSelectorContainer:FindChild("MainButton"):SetText("Click to select a group")
+		local wDeleteGroupSelectorContainer = Apollo.LoadForm("MoO.xml", "DropDownWidget", self.wOptions:FindChild("DeleteGroupSelectorContainer"), self)
+		local wCopyGroupSelectorContainer = Apollo.LoadForm("MoO.xml", "DropDownWidget", self.wOptions:FindChild("CopyGroupSelectorContainer"), self)
+		wDeleteGroupSelectorContainer:FindChild("MainButton"):SetText("Click to select a group")
+		wCopyGroupSelectorContainer:FindChild("MainButton"):SetText("Click to select a group")
 
-	local wSetupSelectorContainer = Apollo.LoadForm("MoO.xml", "DropDownWidget", self.wOptions:FindChild("SetupSelectorContainer"), self)
-	wSetupSelectorContainer:FindChild("MainButton"):SetText("Click to select a setup")
+		local wSetupSelectorContainer = Apollo.LoadForm("MoO.xml", "DropDownWidget", self.wOptions:FindChild("SetupSelectorContainer"), self)
+		wSetupSelectorContainer:FindChild("MainButton"):SetText("Click to select a setup")
 
-	self.wOptions:FindChild("AllowGroupSync"):SetCheck(self.bAcceptGroupSync)
+		self.wOptions:FindChild("AllowGroupSync"):SetCheck(self.bAcceptGroupSync)
+	end
+
+	self.wOptions:Show(true)
 end
 
 function addon:OnSlashCommand(_, input)
@@ -667,6 +717,19 @@ local tInterrupts = {
 	[19022] = true, -- Crush
 	[19029] = true, -- Shockwave
 	[19355] = true, -- Incapacitate
+	-- Stalker
+	[23173] = true, -- Stagger
+	[23705] = true, -- Collapse
+	[23587] = true, -- False retreat
+	-- Engineer
+	[25635] = true, -- Zap
+	[34176] = true, -- Obstruct Vision
+	-- Warrior
+	[38017] = true, -- kick
+	[18363] = true, -- Grapple
+	[18547] = true, -- Flash Bang
+	-- Medic
+	[26543] = true, -- paralytic surge
 
 }
 
@@ -726,17 +789,20 @@ function addon:MyLASInterrupts(bReturnNotSend)
 	self.tCurrLAS = ActionSetLib.GetCurrentActionSet()
 	-- We sync spellIds because you can't get description from an abilityId if it is not for your class
 	local tSpellIds = {}
-	for nIndex, nAbilityId in ipairs(self.tCurrLAS) do
-		if tInterrupts[nAbilityId] then
-			tSpellIds[#tSpellIds+1] = self:GetTieredSpellIdFromLasAbilityId(nAbilityId)
+	if self.tCurrLAS then
+		for nIndex, nAbilityId in ipairs(self.tCurrLAS) do
+			if tInterrupts[nAbilityId] then
+				tSpellIds[#tSpellIds+1] = self:GetTieredSpellIdFromLasAbilityId(nAbilityId)
+			end
 		end
-	end
-	-- do a bunch of nil checks here so we don't send data that is nil, doh
-	if sMemberName and #tSpellIds > 0 then
-		if bReturnNotSend then
-			return tSpellIds
-		else
-			self:SendCommMessage({type = "LASInterrupts", sMemberName = sMemberName, tSpellIds = tSpellIds })
+
+		-- do a bunch of nil checks here so we don't send data that is nil, doh
+		if sMemberName and #tSpellIds > 0 then
+			if bReturnNotSend then
+				return tSpellIds
+			else
+				self:SendCommMessage({type = "LASInterrupts", sMemberName = sMemberName, tSpellIds = tSpellIds })
+			end
 		end
 	end
 end
@@ -806,48 +872,117 @@ end
 -----------------------------------------------------------------------------------------------
 
 do
-	local function oneSidedTableSpellMatchCheck(a, b)
-		for _, v in ipairs(a) do
-			local bMatch
-			for _, s in ipairs(b) do
-				if GameLib.GetSpell(v):GetName() == GameLib.GetSpell(s):GetName() then -- don't really care about tier changes just if someone gains or losses an interrupt (for now at least)
-					bMatch = true
-					break
-				end
-			end
-			if not bMatch then
-				return false
+	local function isEntryInTable(e, t)
+		for k, v in pairs(t) do
+			if GameLib.GetSpell(v):GetName() == GameLib.GetSpell(e):GetName() then
+				return true
 			end
 		end
-		return true
+		return false
 	end
-	function addon:LookForLASInterruptChange()
-		if not self.bAllowLASInterruptCheck then return end
+	-- this returns false when the two tables match
+	-- and returns an indexed table with the not matching values if they don't match
+	local function tablesDontMatch(a, b)
+		if not a then return b end
+		if not b then return a end
+
+		local notMatching = {}
+		for _, v in pairs(a) do
+			if not isEntryInTable(v, b) and not isEntryInTable(v, notMatching) then
+				notMatching[#notMatching+1] = v
+			end
+		end
+		for _, v in pairs(b) do
+			if not isEntryInTable(v, a) and not isEntryInTable(v, notMatching) then
+				notMatching[#notMatching+1] = v
+			end
+		end
+
+		return #notMatching > 0 and notMatching
+	end
+
+	function addon:DelayedAbilityBookCheck()
 		local tCurrLASInterrupts = self:MyLASInterrupts(true)
+		local tLost, tGained = {}, {}
 		if self.tLastLASInterrupts then
 			if (tCurrLASInterrupts and #tCurrLASInterrupts > 0) and #self.tLastLASInterrupts > 0 then
-				if not oneSidedTableSpellMatchCheck(tCurrLASInterrupts, self.tLastLASInterrupts) or not oneSidedTableSpellMatchCheck(self.tLastLASInterrupts, tCurrLASInterrupts) then
-					D("LASInterruptsChanged")
-					self:SendCommMessage({type = "LASInterruptsChanged", sPlayerName = self.uPlayer:GetName(), tLASInterrupts= tCurrLASInterrupts})
-					self:OnLASInterruptChanged(self.uPlayer:GetName(), tCurrLASInterrupts)
+				if tablesDontMatch(tCurrLASInterrupts, self.tLastLASInterrupts) then
+					local tChanges = tablesDontMatch(tCurrLASInterrupts, self.tLastLASInterrupts)
+					for _, v in pairs(tChanges) do
+						if isEntryInTable(v, tCurrLASInterrupts) then
+							tGained[#tGained+1] = v
+						else
+							tLost[#tLost+1] = v
+						end
+					end
+					self:SendCommMessage({type = "LASInterruptsChanged", sPlayerName = self.uPlayer:GetName(), tLASInterrupts = tCurrLASInterrupts, tLost = tLost, tGained = tGained})
+					--self:OnLASInterruptChanged(self.uPlayer:GetName(), tLost, tGained)
 				end
 			elseif #self.tLastLASInterrupts > 0 and not tCurrLASInterrupts then
-				D("new is no interrupt")
+				tLost = tablesDontMatch(tCurrLASInterrupts, self.tLastLASInterrupts)
+				self:SendCommMessage({type = "LASInterruptsChanged", sPlayerName = self.uPlayer:GetName(), tLASInterrupts = tCurrLASInterrupts, tLost = tLost, tGained = tGained})
+				--self:OnLASInterruptChanged(self.uPlayer:GetName(), tLost, tGained)
 			end
 		elseif (tCurrLASInterrupts and #tCurrLASInterrupts > 0) and not self.tLastLASInterrupts then
-			D("old is no interrupt")
+			tGained = tablesDontMatch(tCurrLASInterrupts, self.tLastLASInterrupts)
+			self:SendCommMessage({type = "LASInterruptsChanged", sPlayerName = self.uPlayer:GetName(), tLASInterrupts = tCurrLASInterrupts, tLost = tLost, tGained = tGained})
+			--self:OnLASInterruptChanged(self.uPlayer:GetName(), tLost, tGained)
 		end
 		self.tLastLASInterrupts = self:MyLASInterrupts(true)
 	end
-end
 
-function addon:OnLASInterruptChanged(sPlayerName, tLASInterrupts)
-	local sLostAbilities = ""
+	function addon:OnAbilityBookChange()
+		if not self.bAllowLASInterruptCheck then return end
+		-- have to do this because if you get ability list at this event then it will return what you had not what you have right now.
+		Apollo.RegisterTimerHandler("DelayedAbilityBookCheck", "DelayedAbilityBookCheck", self)
+		Apollo.CreateTimer("DelayedAbilityBookCheck", 0.2, false)
+	end
 
+	function addon:OnLASInterruptChanged(sPlayerName, tLost, tGained)
+		local sLostAbilities = ""
+		local bLost
+		local tOldLASInterrupts = {}
+
+		for sGroupName, tGroupData in pairs(self.tGroups) do
+			for nMemberIndexInGroup, tMemberData in pairs(self.tGroups[sGroupName].BarContainers) do
+				if self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].name == sPlayerName then
+					for nBarIndex, tBar in pairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
+						local bSpellFound
+						for nIndex, nSpellId in ipairs(tOldLASInterrupts) do
+							if self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nBarIndex].nSpellId == nSpellId then
+								bSpellFound = true
+								break
+							end
+						end
+						if not bSpellFound then
+							tOldLASInterrupts[#tOldLASInterrupts+1] = self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nBarIndex].nSpellId
+						end
+					end
+				end
+			end
+		end
+
+		for _, v in pairs(tLost) do
+			if isEntryInTable(v, tOldLASInterrupts) then
+				bLost = true
+				sLostAbilities = ((sLostAbilities == "") and ("%s%s") or ("%s, %s")):format(sLostAbilities, GameLib.GetSpell(v):GetName())
+			end
+		end
+		if bLost then
+			local wPopUp = Apollo.LoadForm("MoO.xml", "GenericConfirmationWindow", nil, self)
+			wPopUp:SetStyle("Escapable", true)
+			wPopUp:SetData({ type = "PopUp"})
+			wPopUp:FindChild("Title"):SetText("Notification")
+			wPopUp:FindChild("HelpText"):SetText(("%s changed LAS setup and lost %s. This/These were used in your current interrupt setup so you might want to do something about this."):format(sPlayerName, sLostAbilities))
+			wPopUp:FindChild("Yes"):SetText("OK")
+			wPopUp:FindChild("No"):SetText("Close")
+		end
+
+	end
 end
 
 function addon:OnOneSecTimer()
-	self:LookForLASInterruptChange() -- this probably should be only done outside of combat however due to unitObjects missing :InCombat() check (should come Winter beta 3.5) we can live with this till now
+	--self:OnAbilityBookChange() -- this probably should be only done outside of combat however due to unitObjects missing :InCombat() check (should come Winter beta 3.5) we can live with this till now
 	for sGroupName, tGroupData in pairs(self.tGroups) do
 		for nMemberIndexInGroup, tMemberData in pairs(self.tGroups[sGroupName].BarContainers) do
 			if self.uPlayer and tMemberData.name == self.uPlayer:GetName() then
@@ -965,7 +1100,7 @@ function addon:OnCommMessage(channel, tMsg)
 	elseif tMsg.type == "LASInterrupts" then
 		tPartyLASInterrupts[tMsg.sMemberName] = tMsg.tSpellIds
 	elseif tMsg.type == "LASInterruptsChanged" then
-		self:OnLASInterruptChanged(tMsg.sPlayerName, tMsg.tLASInterrupts)
+		self:OnLASInterruptChanged(tMsg.sPlayerName, tMsg.tLost, tMsg.tGained)
 	elseif tMsg.type == "RequestVersionCheck" then
 		self:SendCommMessage({type = "VersionCheckData", sMemberName = self.uPlayer:GetName(), nVersionNumber = nVersionNumber})
 	elseif tMsg.type == "VersionCheckData" then
@@ -984,7 +1119,7 @@ function addon:OnCommMessage(channel, tMsg)
 			wPopUp:SetStyle("Escapable", true)
 			wPopUp:SetData({ type = "PopUp"})
 			wPopUp:FindChild("Title"):SetText("Notification")
-			wPopUp:FindChild("HelpText"):SetText(("You've just received a group setup named: <%s> from %s. We've found a setup with that name in the databas so loaded the layout as far as we could, but don't forget to overwrite this save once you are done setting up the group window positions so the latest layout gets saved."):format(tMsg.sName, tMsg.sSender))
+			wPopUp:FindChild("HelpText"):SetText(("You've just received a group setup named: <%s> from %s. We've found a setup with that name in the databas so loaded the layout as far as we could, but don't forget to overwrite this save once you are done setting up the group window positions so the latest layout gets saved. Also, the group frames might be on top of each other, drag them around (or resize them) to see all."):format(tMsg.sName, tMsg.sSender))
 			wPopUp:FindChild("Yes"):SetText("OK")
 			wPopUp:FindChild("No"):SetText("Close")
 
@@ -1008,13 +1143,16 @@ function addon:OnCommMessage(channel, tMsg)
 					end
 				end
 				self:OnLockGroupButton(self.tGroups[sGroupName].GroupContainer:FindChild("Lock"))
+				if not self.tSavedGroups[tMsg.sName][sGroupName].bIsShown and not self:IsPlayerMemberOfGroup(sGroupName) then
+					self.tGroups[sGroupName].GroupContainer:Show(self.tSavedGroups[tMsg.sName][sGroupName].bIsShown)
+				end
 			end
 		else
 			local wPopUp = Apollo.LoadForm("MoO.xml", "GenericConfirmationWindow", nil, self)
 			wPopUp:SetStyle("Escapable", true)
 			wPopUp:SetData({ type = "PopUp"})
 			wPopUp:FindChild("Title"):SetText("Notification")
-			wPopUp:FindChild("HelpText"):SetText(("You've just received a group setup named: <%s> from %s. Couldn't find a setup with that name in the database so we made an initial save. Don't forget to overwrite this save once you are done setting up the group window positions."):format(tMsg.sName, tMsg.sSender))
+			wPopUp:FindChild("HelpText"):SetText(("You've just received a group setup named: <%s> from %s. Couldn't find a setup with that name in the database so we made an initial save. Don't forget to overwrite this save once you are done setting up the group window positions. Also, the group frames are on top of each other, drag them around (or resize them) to see all."):format(tMsg.sName, tMsg.sSender))
 			wPopUp:FindChild("Yes"):SetText("OK")
 			wPopUp:FindChild("No"):SetText("Close")
 
@@ -1034,7 +1172,7 @@ function addon:OnCommMessage(channel, tMsg)
 	elseif tMsg.type == "Interrupt" then
 		self:UpdateCastInfoForAbility(GameLib.GetSpell(tMsg.nSpellId):GetName(), ("Interrupted: %s"):format(GameLib.GetSpell(tMsg.cast):GetName()))
 	elseif tMsg.type == "CCState" then
-		self:UpdateCastInfoForAbility(GameLib.GetSpell(tMsg.nSpellId):GetName(), ("-%d IA during %s cast"):format(tMsg.nInterruptArmorHit, tMsg.cast))
+		self:UpdateCastInfoForAbility(GameLib.GetSpell(tMsg.nSpellId):GetName(), ("-%d IA during %s%% %s cast"):format(tMsg.nInterruptArmorHit, tMsg.perc, tMsg.cast))
 	end
 end
 
@@ -1209,6 +1347,7 @@ function addon:GenerateSavableGroupTable()
 		local l,t,r,b = tGroupData.GroupContainer:GetAnchorOffsets()
 		tData[sGroupName].tAnchorOffsets = { l = l, t = t, r = r, b = b }
 		tData[sGroupName].bLocked = tGroupData.GroupContainer:GetData().bLocked
+		tData[sGroupName].bIsShown = tGroupData.GroupContainer:IsShown()
 		for nMemberIndexInGroup, tMemberData in pairs(self.tGroups[sGroupName].BarContainers) do
 			tData[sGroupName][nMemberIndexInGroup] = {}
 			tData[sGroupName][nMemberIndexInGroup].name = tMemberData.name
@@ -1237,6 +1376,7 @@ function addon:LoadSavedGroups(tSavedGroupData)
 		if #tGroupData > 0 then -- not an empty group (retard check?)
 			self:RedrawGroup(sGroupName, tGroupData.tAnchorOffsets)
 			self:OnLockGroupButton(self.tGroups[sGroupName].GroupContainer:FindChild("Lock"))
+			self.tGroups[sGroupName].GroupContainer:Show(tGroupData.bIsShown)
 		end
 	end
 end
@@ -1266,7 +1406,7 @@ function addon:OnRestore(eLevel, tDB)
 
 	--D(self.tSavedGroups)
 	-- XXX debug
-	self:OnSlashCommand(_, "config")
+	--self:OnSlashCommand(_, "config")
 end
 
 function addon:OnSave(eLevel)
