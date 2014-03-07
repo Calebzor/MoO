@@ -429,7 +429,14 @@ function addon:HideGroupContainer(wHandler)
 	end
 end
 
-
+function addon:DestroyAllGroups()
+	for sGroupName, tGroupData in pairs(self.tGroups) do
+		if self.tGroups[sGroupName] then
+			self.tGroups[sGroupName].GroupContainer:Destroy()
+			self.tGroups[sGroupName] = nil
+		end
+	end
+end
 
 function addon:OnLockGroupButton(wHandler)
 	if wHandler:GetName() == "LockUnlockAllGroupsButton" then
