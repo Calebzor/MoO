@@ -13,6 +13,9 @@ TODO:
 
 	hook into bossmods
 
+	request sync button that only goes to that one guy
+
+
 <23:51:00> "Trasgress": Engineer bot, the LAS name is called Bruiser bot
 <23:51:15> "Trasgress": After you use it it summons a bot and gives you a reactive abilkity that has a 30s cd
 <23:51:41> "Trasgress": that ability name is [Bot Ability] Blitz
@@ -56,7 +59,7 @@ local _ = _
 local MoO = {}
 local addon = MoO
 
-local nVersionNumber = "1.12"
+local nVersionNumber = "1.13"
 
 
 local function hexToCColor(color, a)
@@ -95,9 +98,9 @@ function addon:new(o)
 	self.sChannelName = nil
 
 	self.tColors = {
-		cBG = {r=1,g=1,b=1,a=1},
-		cProgress = {r=1,g=1,b=1,a=1},
-		cFull = {r=1,g=1,b=1,a=1}
+		cBG = {r=1,g=0,b=0,a=0.5},
+		cProgress = {r=0,g=1,b=1,a=0.5},
+		cFull = {r=0,g=1,b=0.041,a=0.5}
 	}
 
 	self.bAllGroupsLocked = nil
@@ -284,7 +287,7 @@ end
 ]]--
 
 function addon:OnCombatLogCCState(tEventArgs)
-	if tEventArgs.eResult == CombatFloater.CodeEnumCCStateApplyRulesResult.Target_InterruptArmorReduced and tEventArgs.unitTarget:IsCasting() then -- 5 -- interrupt armor reduced while a cast was ongoing
+	if tEventArgs.eResult == CombatFloater.CodeEnumCCStateApplyRulesResult.Target_InterruptArmorReduced and tEventArgs.unitTarge and tEventArgs.unitTarget:IsCasting() then -- 5 -- interrupt armor reduced while a cast was ongoing
 		local perc = floor(tEventArgs.unitTarget:GetCastElapsed()*100/tEventArgs.unitTarget:GetCastDuration())
 		self:UpdateCastInfoForAbility(tEventArgs.splCallingSpell:GetName(), ("-%d IA during %s%% %s cast"):format(tEventArgs.nInterruptArmorHit, perc, tEventArgs.unitTarget:GetCastName()))
 		self:SendCommMessage({type = "CCState", nSpellId = tEventArgs.splCallingSpell:GetId(), nInterruptArmorHit = tEventArgs.nInterruptArmorHit, perc = perc, cast = tEventArgs.unitTarget:GetCastName()}) -- we send spellId due to future localization concerns, this adds extra work but will help in the future, -- XXX except for CastName cuz there is not CastId yet :S
@@ -881,7 +884,7 @@ end
 do
 	local function isEntryInTable(e, t)
 		for k, v in pairs(t) do
-			if GameLib.GetSpell(v):GetName() == GameLib.GetSpell(e):GetName() then
+			if GameLib.GetSpell(v) and GameLib.GetSpell(e) and GameLib.GetSpell(v):GetName() == GameLib.GetSpell(e):GetName() then
 				return true
 			end
 		end
@@ -969,10 +972,12 @@ do
 			end
 		end
 
-		for _, v in pairs(tLost) do
-			if isEntryInTable(v, tOldLASInterrupts) then
-				bLost = true
-				sLostAbilities = ((sLostAbilities == "") and ("%s%s") or ("%s, %s")):format(sLostAbilities, GameLib.GetSpell(v):GetName())
+		if tLost then
+			for _, v in pairs(tLost) do
+				if isEntryInTable(v, tOldLASInterrupts) then
+					bLost = true
+					sLostAbilities = ((sLostAbilities == "") and ("%s%s") or ("%s, %s")):format(sLostAbilities, GameLib.GetSpell(v):GetName())
+				end
 			end
 		end
 		if bLost then
@@ -1177,8 +1182,10 @@ function addon:OnCommMessage(channel, tMsg)
 			self:SaveGroups(tMsg.sName)
 		end
 	elseif tMsg.type == "Interrupt" then
-		self:UpdateCastInfoForAbility(GameLib.GetSpell(tMsg.nSpellId):GetName(), ("Interrupted: %s"):format(GameLib.GetSpell(tMsg.cast):GetName()))
-	elseif tMsg.type == "CCState" then
+		if tMsg.nSpellId and tMsg.cast and GameLib.GetSpell(tMsg.nSpellId) and GameLib.GetSpell(tMsg.cast) then
+			self:UpdateCastInfoForAbility(GameLib.GetSpell(tMsg.nSpellId):GetName(), ("Interrupted: %s"):format(GameLib.GetSpell(tMsg.cast):GetName()))
+		end
+	elseif tMsg.type == "CCState" and tMsg.perc then
 		self:UpdateCastInfoForAbility(GameLib.GetSpell(tMsg.nSpellId):GetName(), ("-%d IA during %s%% %s cast"):format(tMsg.nInterruptArmorHit, tMsg.perc, tMsg.cast))
 	end
 end
@@ -1392,15 +1399,9 @@ function addon:OnRestore(eLevel, tDB)
 	if eLevel ~= GameLib.CodeEnumAddonSaveLevel.General then return end
 
 	if tDB.tColors then
-		if tDB.tColors.cBG then
-			self.tColors.cBG = tDB.tColors.cBG
-		end
-		if tDB.tColors.cFull then
-			self.tColors.cFull = tDB.tColors.cFull
-		end
-		if tDB.tColors.cProgress then
-			self.tColors.cProgress = tDB.tColors.cProgress
-		end
+		self.tColors.cBG = tDB.tColors.cBG and tDB.tColors.cBG
+		self.tColors.cProgress = tDB.tColors.cProgress and tDB.tColors.cProgress
+		self.tColors.cFull = tDB.tColors.cFull and tDB.tColors.cFull
 	end
 
 	self.bAcceptGroupSync = tDB.bAcceptGroupSync
