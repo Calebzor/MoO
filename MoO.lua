@@ -62,7 +62,7 @@ local _ = _
 local MoO = {}
 local addon = MoO
 
-local nVersionNumber = "1.15"
+local nVersionNumber = 1.151
 
 
 local function hexToCColor(color, a)
@@ -138,12 +138,6 @@ function addon:OnLoad()
 	Apollo.RegisterEventHandler("AbilityBookChange", "OnAbilityBookChange", self)
 	Apollo.RegisterEventHandler("CombatLogModifyInterruptArmor", "OnCombatLogModifyInterruptArmor", self)
 
-
-	--self.wAbility = Apollo.LoadForm("MoO.xml", "TempAbilityWindow", nil, self)
-
-	--Apollo.CreateTimer("UpdateBarTimer", self.nBarTimeIncrement, true)
-	--Apollo.StartTimer("UpdateBarTimer")
-	--Apollo.RegisterTimerHandler("UpdateBarTimer", "BarUpdater", self)
 	Apollo.RegisterTimerHandler("OneSecTimer", "OnOneSecTimer", self)
 
 	Apollo.RegisterTimerHandler("DelayedInit", "DelayedInit", self)
@@ -151,10 +145,6 @@ function addon:OnLoad()
 
 	self.CommChannel = nil
 	self.wOptions = nil
-
-	-- XXX debug
-
-
 end
 
 function addon:DelayedInit()
@@ -225,38 +215,6 @@ end
 -----------------------------------------------------------------------------------------------
 -- MoO Functions
 -----------------------------------------------------------------------------------------------
-
-
-
-function testmoo()
-
-
-	addon:AddGroup("Group1", "Caleb", 32812, 35)
-	addon:AddGroup("Group1", "RaidSlinger", 46160, 20)
-	addon:AddGroup("Group1", "RaidSlinger", 34355, 30)
-
-	--addon:AddGroup("Group2", "Caleb", 32812, 35)
-	--addon:AddGroup("Group2", "RaidSlinger", 46160, 20)
-	--addon:AddGroup("Group2", "RaidSlinger", 34355, 30)
-    --
-    --
-	--addon:AddGroup("Group3", "Caleb", 32812, 35)
-	--addon:AddGroup("Group3", "RaidSlinger", 46160, 20)
-	--addon:AddGroup("Group3", "RaidSlinger", 34355, 30)
-    --
-    --
-	--addon:AddGroup("Group4", "Caleb", 32812, 35)
-	--addon:AddGroup("Group4", "RaidSlinger", 46160, 20)
-	--addon:AddGroup("Group4", "RaidSlinger", 34355, 30)
-
-	--addon:AddGroup("Group1", "ASDASF", 46160, 20)
-	--addon:AddBarToMemberInGroup("Group1", "ASDASF", 34355)
-	--addon:StartBar("Group1", "ASDASF", 46160, addon.nTimer)
-
-	--addon:RequestPartyLASInterrupts()
-
-	addon:ShowMemberButtons(nil, true, true)
-end
 
 function addon:TrackCooldown(unitCaster, splCallingSpell)
 	local sPlayerName = unitCaster:GetName()
@@ -531,6 +489,10 @@ function addon:ShowMemberButtons(sTheActualGroupsName, bShow, bAllGroups)
 	end
 end
 
+-----------------------------------------------------------------------------------------------
+-- Group GUI builders
+-----------------------------------------------------------------------------------------------
+
 function addon:AddToGroup(sGroupName, sMemberName, name, nMax, bLocked)
 	self:NewGroup(sGroupName, bLocked)
 	self:AddMemberToGroup(sGroupName, sMemberName)
@@ -584,17 +546,6 @@ function addon:AddBarToMemberInGroup(sGroupName, sMemberName, nSpellId, nMax)
 		self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars].frame:SetMax(nMax)
 
 		self:FitBarsToMember(sGroupName, sMemberName)
-	end
-end
-
-function addon:StartBar(sGroupName, sMemberName, nSpellId, nStartTime)
-	local nMemberIndexInGroup = getMemberOfGroupIndex(sGroupName, sMemberName)
-	if nMemberIndexInGroup then
-		for k, tBar in ipairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
-			if tBar.nSpellId == nSpellId then
-				self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[k].nStartTime = nStartTime
-			end
-		end
 	end
 end
 
@@ -758,12 +709,12 @@ function addon:Options()
 end
 
 function addon:OnSlashCommand(_, input)
-	if input then
-		if input:find("config") then
-			self:Options()
-		end
-	end
-	--testmoo()
+	self:Options() -- well no other input for now so might as well just open the config on /moo
+	--if input then
+	--	if input:find("config") then
+	--		self:Options()
+	--	end
+	--end
 end
 
 -----------------------------------------------------------------------------------------------
@@ -872,22 +823,18 @@ function addon:MyLASInterrupts(bReturnNotSend)
 	end
 end
 
-function addon:ParseLASInterrupts(tData)
-	-- make sure we got data from everyone in the group if not notify the user
-end
-
 --- Try and get a spells cooldown even if the calling spellIds spellObject returns 0 for :GetCooldowntime()
 -- @return number for the cooldown matching the associated spellName
 function addon:GetCooldown(nSpellId)
 	local spellObject = GameLib.GetSpell(nSpellId)
 	local sSpellName = spellObject:GetName()
-	if spellObject:GetCooldownTime() and spellObject:GetCooldownTime() > 0 then return spellObject:GetCooldownTime() end -- this spellId provides cooldown, return with that nothing else to do
+	if spellObject:GetCooldownTime() and spellObject:GetCooldownTime() > 0 then return floor(spellObject:GetCooldownTime()) end -- this spellId provides cooldown, return with that nothing else to do -- we floor because else you get some weird decimal numbers, rather loose some accuraccy than have some wonky display
 
 	-- life is not always that easy lets try to get spell cooldown from our known interrupt abilities by name matching
 	for nAbilityId, nSpellIdForBaseTier in pairs(tInterrupts) do
 		local splTempSpellObject = GameLib.GetSpell(nSpellIdForBaseTier)
 		if splTempSpellObject:GetName() == sSpellName then
-			return splTempSpellObject:GetCooldownTime()
+			return floor(splTempSpellObject:GetCooldownTime()) -- we floor because else you get some weird decimal numbers, rather loose some accuraccy than have some wonky display
 		end
 	end
 end
@@ -1088,35 +1035,28 @@ end
 
 function addon:OnOneSecTimer()
 	--self:OnAbilityBookChange() -- this probably should be only done outside of combat however due to unitObjects missing :InCombat() check (should come Winter beta 3.5) we can live with this till now
+	local tBarData = {}
 	for sGroupName, tGroupData in pairs(self.tGroups) do
 		for nMemberIndexInGroup, tMemberData in pairs(self.tGroups[sGroupName].BarContainers) do
 			if self.uPlayer and tMemberData.name == self.uPlayer:GetName() then
-				local tBarData = {}
-				if self.bAlwaysBroadcastCooldowns then
-					if self.tLastLASInterrupts then
-						for nIndex, nSpellId in ipairs(self.tLastLASInterrupts) do
-							tBarData[nSpellId] = {self.uPlayer:GetName(), floor(GameLib.GetSpell(nSpellId):GetCooldownTime())}
-						end
-					end
-				else
-					for nBarIndex, tBar in ipairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
+				for nBarIndex, tBar in ipairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
+					local spellObject = GameLib.GetSpell(tBar.nSpellId)
+					local nCD, nRemainingCD = floor(spellObject:GetCooldownTime()), floor(spellObject:GetCooldownRemaining())
+					if nRemainingCD and nRemainingCD > 0 then
+						tBar.frame:SetBarColor(TableToCColor(self.tColors.cProgress))
+						tBar.frame:SetProgress(nRemainingCD)
 						if not tBarData[tBar.nSpellId] then -- no need to overwrite ability data
-							local spellObject = GameLib.GetSpell(tBar.nSpellId)
-							local nCD, nRemainingCD = floor(spellObject:GetCooldownTime()), floor(spellObject:GetCooldownRemaining())
-							if nRemainingCD and nRemainingCD > 0 then
-								tBar.frame:SetBarColor(TableToCColor(self.tColors.cProgress))
-								tBar.frame:SetProgress(nRemainingCD)
-								tBarData[tBar.nSpellId] = {tMemberData.name, nRemainingCD}
-							else
-								tBar.frame:FindChild("CastInfo"):SetText("")
-								tBar.frame:SetBarColor(TableToCColor(self.tColors.cFull))
-								tBar.frame:SetProgress(nCD)
-								tBarData[tBar.nSpellId] = {tMemberData.name, nCD}
-							end
+							tBarData[tBar.nSpellId] = {tMemberData.name, nRemainingCD}
+						end
+					else
+						tBar.frame:FindChild("CastInfo"):SetText("")
+						tBar.frame:SetBarColor(TableToCColor(self.tColors.cFull))
+						tBar.frame:SetProgress(nCD)
+						if not tBarData[tBar.nSpellId] then -- no need to overwrite ability data
+							tBarData[tBar.nSpellId] = {tMemberData.name, nCD}
 						end
 					end
 				end
-				self:SendCommMessage(tBarData) -- use a single message to transmit all player bar data
 			elseif self.uPlayer and tMemberData.name ~= self.uPlayer:GetName() then -- not the player
 				-- do some clean up here: if the whole group is out of combat and everything in the cooldown database is on cooldown then purge the database
 				for nBarIndex, tBar in ipairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
@@ -1137,50 +1077,31 @@ function addon:OnOneSecTimer()
 			end
 		end
 	end
-end
-
--- I know this is the core of the addon, but yeah it needs some cleaning up or rework, cuz this is not ideal
-function addon:BarUpdater()
-	self.nTimer = self.nTimer + self.nBarTimeIncrement
-	for sGroupName, tGroupData in pairs(self.tGroups) do
-		for nMemberIndexInGroup, tMemberData in pairs(self.tGroups[sGroupName].BarContainers) do
-			for nBarIndex, tBar in pairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
-			-- XXX there is something wrong with time based bar accuraccy, should probably sync bar progress every couple of sec to make sure it is accurate
-
-				-- for certain abilities just starting a timer is not good enough because there are AMPs for example that make the cooldown complete faster
-
-				if self.uPlayer and tMemberData.name == self.uPlayer:GetName() then
-					--for index, nAbilityId in pairs(self.tCurrLAS) do
-						--self.wAbility:SetAbilityId(nAbilityId)
-						--if nAbilityId and nAbilityId > 0 then -- only check non empty slots
-
-					local spellObject = GameLib.GetSpell(tBar.nSpellId)
-					--D(spellObject:GetId() .. " " .. spellObject:GetName())
-					--if spellObject:GetId() == tBar.nSpellId then
-					local nCD, nRemainingCD = spellObject:GetCooldownTime(), spellObject:GetCooldownRemaining()
+	if self.bAlwaysBroadcastCooldowns then
+		if self.tLastLASInterrupts then
+			for nIndex, nSpellId in ipairs(self.tLastLASInterrupts) do
+				if not tBarData[nSpellId] then -- no need to overwrite ability data
+					local spellObject = GameLib.GetSpell(nSpellId)
+					local nCD, nRemainingCD = floor(spellObject:GetCooldownTime()), floor(spellObject:GetCooldownRemaining())
 					if nRemainingCD and nRemainingCD > 0 then
-						--tBar.frame:SetProgress(nRemainingCD)
+						if not tBarData[nSpellId] then -- no need to overwrite ability data
+							tBarData[nSpellId] = {self.uPlayer:GetName(), nRemainingCD}
+						end
 					else
-						--tBar.frame:SetProgress(nCD)
-					end
-							--end
-
-						--end
-					--end
-				else -- not a player bar
-					if tBar.nStartTime then
-						--D(tBar.nMax-self.nTimer-tBar.nStartTime)
-
-						tBar.frame:SetProgress(tBar.nMax - self.nTimer - tBar.nStartTime)
-						if self.nTimer > tBar.nStartTime + tBar.nMax then
-							tBar.frame:SetProgress(tBar.nMax)
+						if not tBarData[nSpellId] then -- no need to overwrite ability data
+							tBarData[nSpellId] = {self.uPlayer:GetName(), nCD}
 						end
 					end
 				end
 			end
 		end
 	end
+	self:SendCommMessage(tBarData) -- use a single message to transmit all player bar data
 end
+
+-----------------------------------------------------------------------------------------------
+-- Addon communication
+-----------------------------------------------------------------------------------------------
 
 function addon:SetGroupChannel(sGroupLeader)
 	local sNewChannel = string.format("Moo_%s%s", sGroupLeader, string.reverse(sGroupLeader))
@@ -1541,9 +1462,8 @@ function addon:OnRestore(eLevel, tDB)
 
 	Apollo.RegisterTimerHandler("DelayedInit", "DelayedInit", self)
 
-	--D(self.tSavedGroups)
 	-- XXX debug
-	self:OnSlashCommand(_, "config")
+	--self:OnSlashCommand(_, "config")
 end
 
 function addon:OnSave(eLevel)
