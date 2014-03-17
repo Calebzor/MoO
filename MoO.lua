@@ -5,6 +5,8 @@
 
 --[[-------------------------------------------------------------------------------------------
 TODO:
+	fix arcane shock tracking since no event fires for it because it is not a CC and ModifyInterruptArmor still does not fire for other units
+
 	have a one button setup for raids for class based groups
 	have a one button setup for like 5 man dungeons
 	only show my group option
@@ -41,6 +43,7 @@ local table = table
 local type = type
 local string = string
 local tonumber = tonumber
+local os = os
 local floor = math.floor
 local Apollo = Apollo
 local ActionSetLib = ActionSetLib
@@ -59,7 +62,7 @@ local _ = _
 local MoO = {}
 local addon = MoO
 
-local nVersionNumber = "1.13"
+local nVersionNumber = "1.15"
 
 
 local function hexToCColor(color, a)
@@ -96,6 +99,7 @@ function addon:new(o)
 	self.bAllowLASInterruptCheck = false
 	self.uPlayer = nil
 	self.sChannelName = nil
+	self.tCooldowns = {}
 
 	self.tColors = {
 		cBG = {r=1,g=0,b=0,a=0.5},
@@ -107,6 +111,7 @@ function addon:new(o)
 	self.tVersionData = {}
 	self.bVersionCheckAllowed = true
 	self.bAcceptGroupSync = true
+	self.bAlwaysBroadcastCooldowns = true
 	self.tSavedGroups = {}
 
 	return o
@@ -131,6 +136,7 @@ function addon:OnLoad()
 	Apollo.RegisterEventHandler("CombatLogInterrupted", "OnCombatLogInterrupted", self)
 
 	Apollo.RegisterEventHandler("AbilityBookChange", "OnAbilityBookChange", self)
+	Apollo.RegisterEventHandler("CombatLogModifyInterruptArmor", "OnCombatLogModifyInterruptArmor", self)
 
 
 	--self.wAbility = Apollo.LoadForm("MoO.xml", "TempAbilityWindow", nil, self)
@@ -252,16 +258,25 @@ function testmoo()
 	addon:ShowMemberButtons(nil, true, true)
 end
 
+function addon:TrackCooldown(unitCaster, splCallingSpell)
+	local sPlayerName = unitCaster:GetName()
+	local nSpellId = splCallingSpell:GetId()
+	if not self.tCooldowns[sPlayerName] then self.tCooldowns[sPlayerName] = {} end
+	self.tCooldowns[sPlayerName][nSpellId] = os.time()
+end
+
 -----------------------------------------------------------------------------------------------
 -- Cast Info stuff
 -----------------------------------------------------------------------------------------------
 
-function addon:UpdateCastInfoForAbility(sSpellName, sText)
+function addon:UpdateCastInfoForAbility(sMemberName, sSpellName, sText)
 	for sGroupName, tGroupData in pairs(self.tGroups) do
 		for nMemberIndexInGroup, tMemberData in pairs(self.tGroups[sGroupName].BarContainers) do
-			for nBarIndex, tBar in pairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
-				if GameLib.GetSpell(tBar.nSpellId):GetName() == sSpellName then
-					tBar.frame:FindChild("CastInfo"):SetText(sText)
+			if tMemberData.name == sMemberName then
+				for nBarIndex, tBar in pairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
+					if GameLib.GetSpell(tBar.nSpellId):GetName() == sSpellName then
+						tBar.frame:FindChild("CastInfo"):SetText(sText)
+					end
 				end
 			end
 		end
@@ -286,18 +301,57 @@ end
     },
 ]]--
 
+local function updatePartyLASInterruptsFromCombatLogEvent(unitCaster, splCallingSpell)
+	if not unitCaster:IsInYourGroup() then return end -- not a group member -> we don't care
+	local sSourceName = unitCaster:GetName()
+	if tPartyLASInterrupts[sSourceName] then
+		for nIndex, nSpellId in ipairs(tPartyLASInterrupts[sSourceName]) do
+			if nSpellId == splCallingSpell:GetId() then return end 	--don't do anything else if that exact spellId was already in the database -- XXX note: think about switching the database into table where keys are spellIds so it is just a lookup
+		end
+	end
+
+	if tPartyLASInterrupts[sSourceName] and #tPartyLASInterrupts[sSourceName] > 0 then -- this player already has data so we gonna remove old spellId so we can use the one we just saw in case it didn't match
+		for nIndex, nSpellId in ipairs(tPartyLASInterrupts[sSourceName]) do
+			if GameLib.GetSpell(nSpellId):GetName() == splCallingSpell:GetName() then
+				tPartyLASInterrupts[sSourceName][nIndex] = nil
+			end
+		end
+	else
+		tPartyLASInterrupts[sSourceName] = {} -- initialize the table so we don't error when we try to add it
+	end
+	table.insert(tPartyLASInterrupts[sSourceName], splCallingSpell:GetId())
+end
+
 function addon:OnCombatLogCCState(tEventArgs)
-	if tEventArgs.eResult == CombatFloater.CodeEnumCCStateApplyRulesResult.Target_InterruptArmorReduced and tEventArgs.unitTarge and tEventArgs.unitTarget:IsCasting() then -- 5 -- interrupt armor reduced while a cast was ongoing
-		local perc = floor(tEventArgs.unitTarget:GetCastElapsed()*100/tEventArgs.unitTarget:GetCastDuration())
-		self:UpdateCastInfoForAbility(tEventArgs.splCallingSpell:GetName(), ("-%d IA during %s%% %s cast"):format(tEventArgs.nInterruptArmorHit, perc, tEventArgs.unitTarget:GetCastName()))
-		self:SendCommMessage({type = "CCState", nSpellId = tEventArgs.splCallingSpell:GetId(), nInterruptArmorHit = tEventArgs.nInterruptArmorHit, perc = perc, cast = tEventArgs.unitTarget:GetCastName()}) -- we send spellId due to future localization concerns, this adds extra work but will help in the future, -- XXX except for CastName cuz there is not CastId yet :S
+	if tEventArgs.unitCaster then
+		self:TrackCooldown(tEventArgs.unitCaster, tEventArgs.splCallingSpell)
+		if tEventArgs.eResult == CombatFloater.CodeEnumCCStateApplyRulesResult.Target_InterruptArmorReduced then -- CombatFloater.CodeEnumCCStateApplyRulesResult.Target_InterruptArmorReduced is 5 -- interrupt armor reduced while a cast was ongoing
+
+			if tEventArgs.unitTarget and tEventArgs.unitTarget:IsCasting() then
+				local perc = floor(tEventArgs.unitTarget:GetCastElapsed()*100/tEventArgs.unitTarget:GetCastDuration())
+				self:UpdateCastInfoForAbility(tEventArgs.unitCaster:GetName(), tEventArgs.splCallingSpell:GetName(), ("-%d IA during %s%% %s cast"):format(tEventArgs.nInterruptArmorHit, perc, tEventArgs.unitTarget:GetCastName()))
+			elseif tEventArgs.unitTarget and not tEventArgs.unitTarget:IsCasting() then
+				self:UpdateCastInfoForAbility(tEventArgs.unitCaster:GetName(), tEventArgs.splCallingSpell:GetName(), ("-%d IA"):format(tEventArgs.nInterruptArmorHit))
+			end
+			--self:SendCommMessage({type = "CCState", nSpellId = tEventArgs.splCallingSpell:GetId(), nInterruptArmorHit = tEventArgs.nInterruptArmorHit, perc = perc, cast = tEventArgs.unitTarget:GetCastName()}) -- we send spellId due to future localization concerns, this adds extra work but will help in the future, -- XXX except for CastName cuz there is not CastId yet :S
+
+		end
+		updatePartyLASInterruptsFromCombatLogEvent(tEventArgs.unitCaster, tEventArgs.splCallingSpell)
 	end
 end
 
+-- /eval Apollo.SetConsoleVariable("cmbtlog.disableModifyInterruptArmor", true)
+function addon:OnCombatLogModifyInterruptArmor(tEventArgs)
+	-- this does not fire for other units as of winter beta 4 so we sync
+end
 
 function addon:OnCombatLogInterrupted(tEventArgs)
-	self:UpdateCastInfoForAbility(tEventArgs.splInterruptingSpell:GetName(), ("Interrupted: %s"):format(tEventArgs.splCallingSpell:GetName()))
-	self:SendCommMessage({type = "Interrupt", nSpellId = tEventArgs.splInterruptingSpell:GetId(), cast = tEventArgs.splCallingSpell:GetId()})
+	if tEventArgs.unitCaster then
+		self:TrackCooldown(tEventArgs.unitCaster, tEventArgs.splInterruptingSpell)
+		self:UpdateCastInfoForAbility(tEventArgs.unitCaster:GetName(), tEventArgs.splInterruptingSpell:GetName(), ("Interrupted: %s"):format(tEventArgs.splCallingSpell:GetName()))
+		updatePartyLASInterruptsFromCombatLogEvent(tEventArgs.unitCaster, tEventArgs.splInterruptingSpell)
+	end
+	--self:SendCommMessage({type = "Interrupt", nSpellId = tEventArgs.splInterruptingSpell:GetId(), cast = tEventArgs.splCallingSpell:GetId()})
 end
 
 -----------------------------------------------------------------------------------------------
@@ -386,7 +440,6 @@ function addon:OnMemberContainerClose(wHandler)
 			if BarContainers.name == sMemberName then
 				BarContainers.frame:Destroy()
 				table.remove(self.tGroups[sGroupName].BarContainers, indexOfMember)
-
 			end
 		end
 
@@ -526,7 +579,7 @@ function addon:AddBarToMemberInGroup(sGroupName, sMemberName, nSpellId, nMax)
 		self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars].frame:SetBGColor(TableToCColor(self.tColors.cBG))
 
 		self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars].nSpellId = nSpellId -- this can be a spellId or just a text
-		if not nMax then nMax = floor(GameLib.GetSpell(nSpellId):GetCooldownTime()) end -- floor because sometimes you get values like 40.00000000000001 which is not so nice
+		if not nMax then nMax = self:GetCooldown(nSpellId) end -- floor because sometimes you get values like 40.00000000000001 which is not so nice
 		self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars].nMax = nMax
 		self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nNumOfBars].frame:SetMax(nMax)
 
@@ -698,6 +751,7 @@ function addon:Options()
 		wSetupSelectorContainer:FindChild("MainButton"):SetText("Click to select a setup")
 
 		self.wOptions:FindChild("AllowGroupSync"):SetCheck(self.bAcceptGroupSync)
+		self.wOptions:FindChild("AlwaysBroadcastCooldowns"):SetCheck(self.bAlwaysBroadcastCooldowns)
 	end
 
 	self.wOptions:Show(true)
@@ -717,38 +771,39 @@ end
 -----------------------------------------------------------------------------------------------
 
 -- don't forget to add the interrupt armour remover gadgets to the list too
--- these are AbilityIds not spellIds!
+-- keys are AbilityIds not spellIds!
+-- values are base tier spellIds
 local tInterrupts = {
 	-- Spellslinger
-	[20325] = true, -- Gate
-	[30160] = true, -- Arcane Shock
-	[16454] = true, -- Spatial Shift
+	[20325] = 34355, -- Gate
+	[30160] = 46160, -- Arcane Shock
+	[16454] = 30006, -- Spatial Shift
 	-- Esper
-	[19022] = true, -- Crush
-	[19029] = true, -- Shockwave
-	[19355] = true, -- Incapacitate
+	[19022] = 32812, -- Crush
+	[19029] = 32819, -- Shockwave
+	[19355] = 33359, -- Incapacitate
 	-- Stalker
-	[23173] = true, -- Stagger
-	[23705] = true, -- Collapse
-	[23587] = true, -- False retreat
+	[23173] = 38791, -- Stagger
+	[23705] = 39372, -- Collapse
+	[23587] = 39246, -- False retreat
 	-- Engineer
-	[25635] = true, -- Zap
-	[34176] = true, -- Obstruct Vision
+	[25635] = 41438, -- Zap
+	[34176] = 51605, -- Obstruct Vision
 	-- Warrior
-	[38017] = true, -- kick
-	[18363] = true, -- Grapple
-	[18547] = true, -- Flash Bang
+	[38017] = 58591, -- kick
+	[18363] = 32132, -- Grapple
+	[18547] = 32320, -- Flash Bang
 	-- Medic
-	[26543] = true, -- paralytic surge
+	[26543] = 42352, -- paralytic surge
 
 }
 
 -- so basically nAbilityId is just the nId from the last tier of a spell in the ability book AbilityBook.GetAbilitiesList()[nAbilityIndex].tTiers[#AbilityBook.GetAbilitiesList()[nAbilityIndex].tTiers].nId
 
-function getAbilityIdFromAbilityName(sAbilityName)
+function getAbilityAndSpellIdFromAbilityName(sAbilityName)
 	for nAbilityIndex, tData in pairs(AbilityBook.GetAbilitiesList()) do
-		if AbilityBook.GetAbilitiesList()[nAbilityIndex].tTiers[1].strName == sAbilityName then
-			return AbilityBook.GetAbilitiesList()[nAbilityIndex].tTiers[#AbilityBook.GetAbilitiesList()[nAbilityIndex].tTiers].nId
+		if AbilityBook.GetAbilitiesList()[nAbilityIndex].tTiers[1].strName:lower() == sAbilityName:lower() then
+			return ("AbilityId: %d SpellId: %d"):format(AbilityBook.GetAbilitiesList()[nAbilityIndex].tTiers[#AbilityBook.GetAbilitiesList()[nAbilityIndex].tTiers].nId, AbilityBook.GetAbilitiesList()[nAbilityIndex].tTiers[1].splObject:GetId())
 		end
 	end
 	return "not found"
@@ -773,25 +828,25 @@ function addon:RequestPartyLASInterrupts()
 end
 
 function addon:OnDebugButton()
-
-	local tData = {}
-	for sGroupName, tGroupData in pairs(self.tGroups) do
-		tData[sGroupName] = {}
-		local l,t,r,b = tGroupData.GroupContainer:GetAnchorOffsets()
-		tData[sGroupName].tAnchorOffsets = { l = l, t = t, r = r, b = b }
-		tData[sGroupName].bLocked = tGroupData.GroupContainer:GetData().bLocked
-		for nMemberIndexInGroup, tMemberData in pairs(self.tGroups[sGroupName].BarContainers) do
-			tData[sGroupName][nMemberIndexInGroup] = {}
-			tData[sGroupName][nMemberIndexInGroup].name = tMemberData.name
-			tData[sGroupName][nMemberIndexInGroup].tBars = {}
-			for nBarIndex, tBar in pairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
-				tData[sGroupName][nMemberIndexInGroup].tBars[nBarIndex] = {}
-				tData[sGroupName][nMemberIndexInGroup].tBars[nBarIndex].nSpellId = tBar.nSpellId
-				tData[sGroupName][nMemberIndexInGroup].tBars[nBarIndex].nMax = tBar.nMax
-			end
-		end
-	end
-	D(tData)
+	D(tPartyLASInterrupts)
+	--local tData = {}
+	--for sGroupName, tGroupData in pairs(self.tGroups) do
+	--	tData[sGroupName] = {}
+	--	local l,t,r,b = tGroupData.GroupContainer:GetAnchorOffsets()
+	--	tData[sGroupName].tAnchorOffsets = { l = l, t = t, r = r, b = b }
+	--	tData[sGroupName].bLocked = tGroupData.GroupContainer:GetData().bLocked
+	--	for nMemberIndexInGroup, tMemberData in pairs(self.tGroups[sGroupName].BarContainers) do
+	--		tData[sGroupName][nMemberIndexInGroup] = {}
+	--		tData[sGroupName][nMemberIndexInGroup].name = tMemberData.name
+	--		tData[sGroupName][nMemberIndexInGroup].tBars = {}
+	--		for nBarIndex, tBar in pairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
+	--			tData[sGroupName][nMemberIndexInGroup].tBars[nBarIndex] = {}
+	--			tData[sGroupName][nMemberIndexInGroup].tBars[nBarIndex].nSpellId = tBar.nSpellId
+	--			tData[sGroupName][nMemberIndexInGroup].tBars[nBarIndex].nMax = tBar.nMax
+	--		end
+	--	end
+	--end
+	--D(tData)
 end
 
 function addon:MyLASInterrupts(bReturnNotSend)
@@ -821,6 +876,22 @@ function addon:ParseLASInterrupts(tData)
 	-- make sure we got data from everyone in the group if not notify the user
 end
 
+--- Try and get a spells cooldown even if the calling spellIds spellObject returns 0 for :GetCooldowntime()
+-- @return number for the cooldown matching the associated spellName
+function addon:GetCooldown(nSpellId)
+	local spellObject = GameLib.GetSpell(nSpellId)
+	local sSpellName = spellObject:GetName()
+	if spellObject:GetCooldownTime() and spellObject:GetCooldownTime() > 0 then return spellObject:GetCooldownTime() end -- this spellId provides cooldown, return with that nothing else to do
+
+	-- life is not always that easy lets try to get spell cooldown from our known interrupt abilities by name matching
+	for nAbilityId, nSpellIdForBaseTier in pairs(tInterrupts) do
+		local splTempSpellObject = GameLib.GetSpell(nSpellIdForBaseTier)
+		if splTempSpellObject:GetName() == sSpellName then
+			return splTempSpellObject:GetCooldownTime()
+		end
+	end
+end
+
 -----------------------------------------------------------------------------------------------
 -- Dropdown Widget
 -----------------------------------------------------------------------------------------------
@@ -831,6 +902,23 @@ function addon:OnDropDownMainButton(wHandler)
 	if wHandler:GetParent():GetParent():GetName():find("Group") then -- it is a group dropdown
 		tData = self.tGroups
 	elseif wHandler:GetParent():GetParent():GetName():find("Member") then -- it is a member dropdown
+		-- clean tPartyLASInterrupts up so non group member data gets removed in case we tracked someone who is no longer in the group
+		local nMemberCount = GroupLib.GetMemberCount()
+		if nMemberCount > 1 then -- only do cleanup if there are actually people in the group
+			for sMemberName, tInterrupts in pairs(tPartyLASInterrupts) do
+				local bFound
+				for i=1, nMemberCount do
+					if sMemberName == GroupLib.GetGroupMember(i).strCharacterName then
+						bFound = true
+						break
+					end
+				end
+				if not bFound then --not in the group right now
+					tPartyLASInterrupts[sMemberName] = nil
+				end
+			end
+		end
+
 		tData = tPartyLASInterrupts
 	elseif wHandler:GetParent():GetParent():GetName():find("Setup") then -- it is a setup dropdown
 		tData = self.tSavedGroups
@@ -878,7 +966,7 @@ function addon:OnDropDownChoiceContainerHide(wHandler)
 end
 
 -----------------------------------------------------------------------------------------------
--- Bar updating
+-- LAS Change tracking and related utility functions
 -----------------------------------------------------------------------------------------------
 
 do
@@ -942,6 +1030,7 @@ do
 	end
 
 	function addon:OnAbilityBookChange()
+		self.tLastLASInterrupts = self:MyLASInterrupts(true)
 		if not self.bAllowLASInterruptCheck then return end
 		-- have to do this because if you get ability list at this event then it will return what you had not what you have right now.
 		Apollo.RegisterTimerHandler("DelayedAbilityBookCheck", "DelayedAbilityBookCheck", self)
@@ -993,29 +1082,58 @@ do
 	end
 end
 
+-----------------------------------------------------------------------------------------------
+-- Bar updating
+-----------------------------------------------------------------------------------------------
+
 function addon:OnOneSecTimer()
 	--self:OnAbilityBookChange() -- this probably should be only done outside of combat however due to unitObjects missing :InCombat() check (should come Winter beta 3.5) we can live with this till now
 	for sGroupName, tGroupData in pairs(self.tGroups) do
 		for nMemberIndexInGroup, tMemberData in pairs(self.tGroups[sGroupName].BarContainers) do
 			if self.uPlayer and tMemberData.name == self.uPlayer:GetName() then
 				local tBarData = {}
-				for nBarIndex, tBar in ipairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
-					if not tBarData[tBar.nSpellId] then -- no need to overwrite ability data
-						local spellObject = GameLib.GetSpell(tBar.nSpellId)
-						local nCD, nRemainingCD = floor(spellObject:GetCooldownTime()), floor(spellObject:GetCooldownRemaining())
-						if nRemainingCD and nRemainingCD > 0 then
-							tBar.frame:SetBarColor(TableToCColor(self.tColors.cProgress))
-							tBar.frame:SetProgress(nRemainingCD)
-							tBarData[tBar.nSpellId] = {tMemberData.name, nRemainingCD}
-						else
-							tBar.frame:FindChild("CastInfo"):SetText("")
-							tBar.frame:SetBarColor(TableToCColor(self.tColors.cFull))
-							tBar.frame:SetProgress(nCD)
-							tBarData[tBar.nSpellId] = {tMemberData.name, nCD}
+				if self.bAlwaysBroadcastCooldowns then
+					if self.tLastLASInterrupts then
+						for nIndex, nSpellId in ipairs(self.tLastLASInterrupts) do
+							tBarData[nSpellId] = {self.uPlayer:GetName(), floor(GameLib.GetSpell(nSpellId):GetCooldownTime())}
+						end
+					end
+				else
+					for nBarIndex, tBar in ipairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
+						if not tBarData[tBar.nSpellId] then -- no need to overwrite ability data
+							local spellObject = GameLib.GetSpell(tBar.nSpellId)
+							local nCD, nRemainingCD = floor(spellObject:GetCooldownTime()), floor(spellObject:GetCooldownRemaining())
+							if nRemainingCD and nRemainingCD > 0 then
+								tBar.frame:SetBarColor(TableToCColor(self.tColors.cProgress))
+								tBar.frame:SetProgress(nRemainingCD)
+								tBarData[tBar.nSpellId] = {tMemberData.name, nRemainingCD}
+							else
+								tBar.frame:FindChild("CastInfo"):SetText("")
+								tBar.frame:SetBarColor(TableToCColor(self.tColors.cFull))
+								tBar.frame:SetProgress(nCD)
+								tBarData[tBar.nSpellId] = {tMemberData.name, nCD}
+							end
 						end
 					end
 				end
 				self:SendCommMessage(tBarData) -- use a single message to transmit all player bar data
+			elseif self.uPlayer and tMemberData.name ~= self.uPlayer:GetName() then -- not the player
+				-- do some clean up here: if the whole group is out of combat and everything in the cooldown database is on cooldown then purge the database
+				for nBarIndex, tBar in ipairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
+					local spellObject = GameLib.GetSpell(tBar.nSpellId)
+					local nCD = self:GetCooldown(tBar.nSpellId)
+					if self.tCooldowns[tMemberData.name] and self.tCooldowns[tMemberData.name][tBar.nSpellId] and type(self.tCooldowns[tMemberData.name][tBar.nSpellId]) == "number" and nCD then
+						local nRemainingCD = floor(nCD - (os.time() - self.tCooldowns[tMemberData.name][tBar.nSpellId]))
+						if nRemainingCD and nRemainingCD > 0 then
+							tBar.frame:SetBarColor(TableToCColor(self.tColors.cProgress))
+							tBar.frame:SetProgress(nRemainingCD)
+						else
+							tBar.frame:FindChild("CastInfo"):SetText("")
+							tBar.frame:SetBarColor(TableToCColor(self.tColors.cFull))
+							tBar.frame:SetProgress(nCD)
+						end
+					end
+				end
 			end
 		end
 	end
@@ -1081,6 +1199,11 @@ function addon:OnAllowGroupSyncButton(wHandler)
 	self.bAcceptGroupSync = wHandler:IsChecked()
 end
 
+function addon:OnAlwaysBroadcastCooldowns(wHandler)
+	self.bAlwaysBroadcastCooldowns = wHandler:IsChecked()
+end
+
+
 function addon:OnCommMessage(channel, tMsg)
 	if channel ~= self.CommChannel then return nil end
 
@@ -1088,9 +1211,13 @@ function addon:OnCommMessage(channel, tMsg)
 		-- all for performance and reduce network traffic so every other comm message has to have a type
 		for nSpellId, tAbilityData in pairs(tMsg) do
 			if type(nSpellId) == "number" and type(tAbilityData[1]) == "string" and type(tAbilityData[2]) == "number" then -- do some type checking at least to try and prevent some errors in case a typeless message (malformed) one gets through somehow
+
 				for sGroupName, tGroupData in pairs(self.tGroups) do
 					for nMemberIndexInGroup, tMemberData in pairs(self.tGroups[sGroupName].BarContainers) do
 						if self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].name == tAbilityData[1] then
+							-- wipe cooldown data for this spellId since we use sync which should be more reliable due to abilities that reduce cooldown
+							if not self.tCooldowns[tAbilityData[1]] then self.tCooldowns[tAbilityData[1]] = {} end
+							self.tCooldowns[tAbilityData[1]][nSpellId] = "syncing"
 							for nBarIndex, tBar in pairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
 								if self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nBarIndex].nSpellId == nSpellId then
 									if tAbilityData[2] == self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars[nBarIndex].nMax then
@@ -1181,12 +1308,13 @@ function addon:OnCommMessage(channel, tMsg)
 			end
 			self:SaveGroups(tMsg.sName)
 		end
-	elseif tMsg.type == "Interrupt" then
-		if tMsg.nSpellId and tMsg.cast and GameLib.GetSpell(tMsg.nSpellId) and GameLib.GetSpell(tMsg.cast) then
-			self:UpdateCastInfoForAbility(GameLib.GetSpell(tMsg.nSpellId):GetName(), ("Interrupted: %s"):format(GameLib.GetSpell(tMsg.cast):GetName()))
-		end
-	elseif tMsg.type == "CCState" and tMsg.perc then
-		self:UpdateCastInfoForAbility(GameLib.GetSpell(tMsg.nSpellId):GetName(), ("-%d IA during %s%% %s cast"):format(tMsg.nInterruptArmorHit, tMsg.perc, tMsg.cast))
+	-- deprecated since we read this from the combatlog now
+	--elseif tMsg.type == "Interrupt" then
+	--	if tMsg.nSpellId and tMsg.cast and GameLib.GetSpell(tMsg.nSpellId) and GameLib.GetSpell(tMsg.cast) then
+	--		self:UpdateCastInfoForAbility(GameLib.GetSpell(tMsg.nSpellId):GetName(), ("Interrupted: %s"):format(GameLib.GetSpell(tMsg.cast):GetName()))
+	--	end
+	--elseif tMsg.type == "CCState" and tMsg.perc then
+	--	self:UpdateCastInfoForAbility(GameLib.GetSpell(tMsg.nSpellId):GetName(), ("-%d IA during %s%% %s cast"):format(tMsg.nInterruptArmorHit, tMsg.perc, tMsg.cast))
 	end
 end
 
@@ -1405,6 +1533,7 @@ function addon:OnRestore(eLevel, tDB)
 	end
 
 	self.bAcceptGroupSync = tDB.bAcceptGroupSync
+	self.bAlwaysBroadcastCooldowns = tDB.bAlwaysBroadcastCooldowns
 
 	self.tActiveGroupData = tDB.tActiveGroupData
 
@@ -1414,7 +1543,7 @@ function addon:OnRestore(eLevel, tDB)
 
 	--D(self.tSavedGroups)
 	-- XXX debug
-	--self:OnSlashCommand(_, "config")
+	self:OnSlashCommand(_, "config")
 end
 
 function addon:OnSave(eLevel)
@@ -1424,6 +1553,7 @@ function addon:OnSave(eLevel)
 	tDB.tColors = self.tColors
 
 	tDB.bAcceptGroupSync = self.bAcceptGroupSync
+	tDB.bAlwaysBroadcastCooldowns = self.bAlwaysBroadcastCooldowns
 
 	local tData = self:GenerateSavableGroupTable()
 
