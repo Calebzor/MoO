@@ -62,7 +62,7 @@ local _ = _
 local MoO = {}
 local addon = MoO
 
-local nVersionNumber = 1.151
+local sVersion = "7.1.15.3"
 
 
 local function hexToCColor(color, a)
@@ -220,7 +220,9 @@ function addon:TrackCooldown(unitCaster, splCallingSpell)
 	local sPlayerName = unitCaster:GetName()
 	local nSpellId = splCallingSpell:GetId()
 	if not self.tCooldowns[sPlayerName] then self.tCooldowns[sPlayerName] = {} end
-	self.tCooldowns[sPlayerName][nSpellId] = os.time()
+	if sPlayerName and nSpellId then
+		self.tCooldowns[sPlayerName][nSpellId] = os.time()
+	end
 end
 
 -----------------------------------------------------------------------------------------------
@@ -1162,9 +1164,9 @@ function addon:OnCommMessage(channel, tMsg)
 	elseif tMsg.type == "LASInterruptsChanged" then
 		self:OnLASInterruptChanged(tMsg.sPlayerName, tMsg.tLost, tMsg.tGained)
 	elseif tMsg.type == "RequestVersionCheck" then
-		self:SendCommMessage({type = "VersionCheckData", sMemberName = self.uPlayer:GetName(), nVersionNumber = nVersionNumber})
+		self:SendCommMessage({type = "VersionCheckData", sMemberName = self.uPlayer:GetName(), sVersion = sVersion})
 	elseif tMsg.type == "VersionCheckData" then
-		self.tVersionData[#self.tVersionData+1] = { sName = tMsg.sMemberName, nVersionNumber = tMsg.nVersionNumber }
+		self.tVersionData[#self.tVersionData+1] = { sName = tMsg.sMemberName, sVersion = tMsg.sVersion }
 	elseif tMsg.type == "GroupSync" and self.bAcceptGroupSync then
 		-- destroy what we have so we can start fresh
 		--D(tMsg.tGroupData)
@@ -1276,7 +1278,7 @@ do
 		self.bVersionCheckAllowed = false
 		self.tVersionData = {}
 		self:SendCommMessage({type = "RequestVersionCheck"})
-		self.tVersionData[#self.tVersionData+1] = { sName = self.uPlayer:GetName(), nVersionNumber = nVersionNumber}
+		self.tVersionData[#self.tVersionData+1] = { sName = self.uPlayer:GetName(), sVersion = sVersion}
 		if not bTimerExists then
 			Apollo.RegisterTimerHandler("DelayedPrint", "DelayedPrint", self)
 			Apollo.CreateTimer("DelayedPrint", 4, false)
@@ -1290,9 +1292,9 @@ do
 		local sString = ""
 		for k, v in ipairs(self.tVersionData) do
 			if k == 1 then
-				sString = ("(%s: %s)."):format(v.sName, v.nVersionNumber, sString)
+				sString = ("(%s: %s)."):format(v.sName, v.sVersion, sString)
 			else
-				sString = ("(%s: %s), %s "):format(v.sName, v.nVersionNumber, sString)
+				sString = ("(%s: %s), %s "):format(v.sName, v.sVersion, sString)
 			end
 		end
 		Print(("MoO version info: %s"):format(sString))
