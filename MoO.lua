@@ -5,6 +5,8 @@
 
 --[[-------------------------------------------------------------------------------------------
 TODO:
+	add a help that describes how majority of the addon works
+
 	fix arcane shock tracking since no event fires for it because it is not a CC and ModifyInterruptArmor still does not fire for other units
 
 	have a one button setup for raids for class based groups
@@ -61,7 +63,7 @@ local _ = _
 local MoO = {}
 local addon = MoO
 
-local sVersion = "7.1.15.6"
+local sVersion = "7.1.15.7"
 
 local function hexToCColor(color, a)
 	if not a then a = 1 end
