@@ -61,8 +61,7 @@ local _ = _
 local MoO = {}
 local addon = MoO
 
-local sVersion = "7.1.15.5"
-
+local sVersion = "7.1.15.6"
 
 local function hexToCColor(color, a)
 	if not a then a = 1 end
