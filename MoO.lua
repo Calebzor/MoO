@@ -58,7 +58,6 @@ local Print = Print
 local Event_FireGenericEvent = Event_FireGenericEvent
 local _ = _
 
-
 local MoO = {}
 local addon = MoO
 
