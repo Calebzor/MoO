@@ -63,7 +63,7 @@ local _ = _
 local MoO = {}
 local addon = MoO
 
-local sVersion = "7.1.15.7"
+local sVersion = "7.1.15.8"
 
 local function hexToCColor(color, a)
 	if not a then a = 1 end
@@ -145,6 +145,8 @@ function addon:OnLoad()
 
 	self.CommChannel = nil
 	self.wOptions = nil
+	self.wHelp = nil
+	self.wOneButton = nil
 end
 
 function addon:DelayedInit()
@@ -617,7 +619,15 @@ function addon:ShiftMember(wHandler, wControl)
 end
 
 function addon:OnEditBoxChanged(wHandler, wControl, input)
-	wControl:SetTextColor(tColor.orange)
+	if wHandler:GetParent():GetName():find("OneButtonSetup") then -- OneButtonSetup window input box
+		if input:find("([^0-9]+)") then
+			wControl:SetTextColor(tColor.red)
+		else
+			wControl:SetTextColor(tColor.green)
+		end
+	else -- all the other input boxes
+		wControl:SetTextColor(tColor.orange)
+	end
 end
 
 function addon:AddGroupButton()
@@ -689,6 +699,15 @@ end
 
 function addon:OnCloseButton(wHandler)
 	wHandler:GetParent():Show(false)
+end
+
+function addon:OnHelpButton(wHandler)
+	if not self.wHelp then
+		self.wHelp = Apollo.LoadForm("MoO.xml", "HelpFrame", nil, self)
+		local wTextContainer = self.wHelp:FindChild("TextContainer")
+		wTextContainer:SetText("HELP! - going to fill this out eventually.")
+	end
+	self.wHelp:Show(true)
 end
 
 function addon:Options()
@@ -773,6 +792,7 @@ function addon:GetTieredSpellIdFromLasAbilityId(nAbilityId)
 end
 
 function addon:RequestPartyLASInterrupts()
+	if self.wOneButton then self.wOneButton:Show(false) end -- this is the easy way: we hide that window so the user has to click the "one" button again and that we will recalculate data for the new window there
 	tPartyLASInterrupts = {} -- wipe the cache
 	--add our own LAS interrupts
 	tPartyLASInterrupts[self.uPlayer:GetName()] = self:MyLASInterrupts(true)
@@ -781,7 +801,7 @@ function addon:RequestPartyLASInterrupts()
 end
 
 function addon:OnDebugButton()
-	D(tPartyLASInterrupts)
+	D(self.tLastLASInterrupts)
 	--local tData = {}
 	--for sGroupName, tGroupData in pairs(self.tGroups) do
 	--	tData[sGroupName] = {}
@@ -1042,6 +1062,20 @@ function addon:OnOneSecTimer()
 		for nMemberIndexInGroup, tMemberData in pairs(self.tGroups[sGroupName].BarContainers) do
 			if self.uPlayer and tMemberData.name == self.uPlayer:GetName() then
 				for nBarIndex, tBar in ipairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
+					-- need to make sure the spellId is the actual spell we have on our bars because if an ability is added to the bars from the combatlog then that spellIds spellObject may not provide a cooldown
+					local bCorrectSpellId
+					for nIndex, nSpellId in ipairs(self.tLastLASInterrupts) do
+						if nSpellId == tBar.nSpellId then
+							bCorrectSpellId = true
+						end
+						if not bCorrectSpellId then
+							if GameLib.GetSpell(nSpellId):GetName() == GameLib.GetSpell(tBar.nSpellId):GetName() then
+								tBar.nSpellId = nSpellId
+								break
+							end
+						end
+					end
+
 					local spellObject = GameLib.GetSpell(tBar.nSpellId)
 					local nCD, nRemainingCD = floor(spellObject:GetCooldownTime()), floor(spellObject:GetCooldownRemaining())
 					if nRemainingCD and nRemainingCD > 0 then
@@ -1396,8 +1430,109 @@ function addon:OnGenericButton(wHandler)
 			self:LoadSavedGroups(self.tSavedGroups[tParentData.sName])
 		end
 		wHandler:GetParent():Destroy()
+	elseif tParentData.type == "ConfirmOneButtonCreation" then
+		if wHandler:GetName() == "Yes" then
+			self:GenerateGroupsFromOneButtonWindow(tParentData.nMembersPerGroup)
+		end
+		wHandler:GetParent():Destroy()
 	elseif tParentData.type == "PopUp" then
 		wHandler:GetParent():Destroy()
+	end
+end
+
+-----------------------------------------------------------------------------------------------
+-- "One" button setup
+-----------------------------------------------------------------------------------------------
+
+function addon:GenerateGroupsFromOneButtonWindow(nMembersPerGroup)
+
+	for sGroupName, _  in pairs(self.tGroups) do
+		self.tGroups[sGroupName].GroupContainer:Destroy()
+		self.tGroups[sGroupName] = nil
+	end
+	local sGroupName, nGroupMemberCounter, nGroupCounter, nMembers = "Group%d", 0, 1, 0
+
+	for sMemberName, tInterrupts in pairs(tPartyLASInterrupts) do
+		nMembers = nMembers + 1
+	end
+
+	local nNumberOfFullGroupsWeCanCreate = floor(nMembers/nMembersPerGroup)
+
+	for sMemberName, tInterrupts in pairs(tPartyLASInterrupts) do
+		for nIndex, nSpellId in pairs(tInterrupts) do
+			self:AddToGroup(sGroupName:format(nGroupCounter), sMemberName, nSpellId, self:GetCooldown(nSpellId), false)
+		end
+		nGroupMemberCounter = nGroupMemberCounter + 1
+		if nGroupMemberCounter == nMembersPerGroup then
+			nGroupCounter = nGroupCounter + 1
+		end
+		-- might as well create a group for the rest too so we comment this out
+		--if nGroupCounter == nNumberOfFullGroupsWeCanCreate then
+		--	break
+		--end
+	end
+end
+
+function addon:OnOneButtonSetup()
+	if not self.wOneButton then
+		self.wOneButton = Apollo.LoadForm("MoO.xml", "OneButtonSetupWindow", nil, self)
+	end
+	local wDataText = self.wOneButton:FindChild("DataText")
+	local nNumberOfInterrupts, nTotalInterruptCD, nMembers = 0,0,0
+	for sMemberName, tInterrupts in pairs(tPartyLASInterrupts) do
+		nMembers = nMembers + 1
+		for nIndex, nSpellId in pairs(tInterrupts) do -- pairs here because I think I'll switch to non indexed table at some point so this makes it future proof
+			nNumberOfInterrupts = nNumberOfInterrupts + 1
+			nTotalInterruptCD = nTotalInterruptCD + self:GetCooldown(nSpellId)
+		end
+	end
+	local nAvgInterruptCD = nTotalInterruptCD / nNumberOfInterrupts
+	local sText = 'You currently have data from %d group members (A total of %d interrupts with an average cooldown of %.2f seconds). If these numbers seem low and you know that there are more people in the raid using the addon then press the "Request Party LAS Interrupts" button in the main config window. Another way to increase this number is have your raid members use their interrupts so the addon can track them. Rember that only interrupts that hit something can be tracked and that reloading the UI wipes this database.'
+	wDataText:SetText(sText:format(nMembers, nNumberOfInterrupts, nAvgInterruptCD))
+	self.wOneButton:FindChild("GroupSizeInputField"):SetText("")
+	self.wOneButton:FindChild("GroupSizeInputField"):InsertText("Type here the number of members for a group.")
+	self.wOneButton:FindChild("GroupSizeInputField"):SetTextColor(tColor.orange)
+
+	self.wOneButton:Show(true)
+end
+
+function addon:OnOneButtonSetupCreateGroups(wHandler)
+	local wInputBox = wHandler:GetParent():FindChild("GroupSizeInputField")
+	local input = wInputBox:GetText()
+	if input:find("([^0-9]+)") then
+		wInputBox:SetText("") -- clear the text box
+		wInputBox:InsertText("That was not whole a number!") -- add in text, this way it is not hightlighted so red text color is readable
+		wInputBox:SetTextColor(tColor.red)
+		wInputBox:SetFocus()
+	else
+		local nNumberOfInterrupts, nMembers = 0,0
+		for sMemberName, tInterrupts in pairs(tPartyLASInterrupts) do
+			nMembers = nMembers + 1
+			for nIndex, nSpellId in pairs(tInterrupts) do -- pairs here because I think I'll switch to non indexed table at some point so this makes it future proof
+				nNumberOfInterrupts = nNumberOfInterrupts + 1
+			end
+		end
+		local nMembersPerGroup = tonumber(input)
+		if nMembers <= 0 then
+			wInputBox:SetText("") -- clear the text box
+			wInputBox:InsertText("Oops. No member data available. Hint on what to do above.") -- add in text, this way it is not hightlighted so red text color is readable
+			wInputBox:SetTextColor(tColor.red)
+			wInputBox:SetFocus()
+		elseif (nMembers > 0 and nMembersPerGroup > nMembers) or nMembersPerGroup == 0 then -- some retard checks
+			wInputBox:SetText("") -- clear the text box
+			wInputBox:InsertText("Invalid number.") -- add in text, this way it is not hightlighted so red text color is readable
+			wInputBox:SetTextColor(tColor.red)
+			wInputBox:SetFocus()
+		else
+			-- one last confirmation window
+			local wConfirm = Apollo.LoadForm("MoO.xml", "GenericConfirmationWindow", nil, self)
+			wConfirm:SetData({ type = "ConfirmOneButtonCreation", nMembersPerGroup = nMembersPerGroup })
+			wConfirm:FindChild("Title"):SetText("Setup load warning")
+			wConfirm:FindChild("HelpText"):SetText('Generationg a "One" button group setup discards the current group setup. If the current group setup is not saved already then it\'ll be lost. Continue anyways?')
+
+			wHandler:GetParent():Show(false)
+		end
+
 	end
 end
 
