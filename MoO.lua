@@ -68,7 +68,7 @@ local _ = _
 local MoO = {}
 local addon = MoO
 
-local sVersion = "8.1.1.2"
+local sVersion = "8.1.1.3"
 
 local function hexToCColor(color, a)
 	if not a then a = 1 end
@@ -235,7 +235,17 @@ end
 
 function addon:OnChangeColor(wHandler)
 	local color = TableToCColor(self.tColors[wHandler:GetName()])
-	ColorPicker.AdjustCColor(color, true, colorCallback, {cColor = color, sName = wHandler:GetName()})
+	if ColorPicker then
+		ColorPicker.AdjustCColor(color, true, colorCallback, {cColor = color, sName = wHandler:GetName()})
+	else
+		local wPopUp = Apollo.LoadForm("MoO.xml", "GenericConfirmationWindow", nil, self)
+		wPopUp:SetStyle("Escapable", true)
+		wPopUp:SetData({ type = "PopUp"})
+		wPopUp:FindChild("Title"):SetText("Notification")
+		wPopUp:FindChild("HelpText"):SetText("You don't have the ColorPicker addon enabled. This features is not available without it. Search for 'ColorPicker' on wildstar.curseforge.com if you don't have it already.")
+		wPopUp:FindChild("Yes"):SetText("OK")
+		wPopUp:FindChild("No"):SetText("Close")
+	end
 end
 
 -----------------------------------------------------------------------------------------------
