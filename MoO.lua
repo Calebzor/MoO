@@ -1,10 +1,12 @@
 -----------------------------------------------------------------------------------------------
 -- Client Lua Script for MoO
--- Created by Caleb. All rights reserved
+-- Created by Caleb calebzor@gmail.com
 -----------------------------------------------------------------------------------------------
 
 --[[-------------------------------------------------------------------------------------------
 TODO:
+	the one button should use some kind if saved group setup to fix positions for the group container
+
 	add a help that describes how majority of the addon works
 
 	fix arcane shock tracking since no event fires for it because it is not a CC and ModifyInterruptArmor still does not fire for other units
@@ -19,6 +21,9 @@ TODO:
 
 	request sync button that only goes to that one guy
 
+	I think there might be a combatlog event now for LAS changes, might want to look into that so if we can track others LAS change
+	maybe it fires what they changed to so we can track abilities from that, or if that data is not there at least we can wipe what we tracked
+	from them so far from the combat log, that way making sure, abilities not used by them are not tracked anymore.
 
 <23:51:00> "Trasgress": Engineer bot, the LAS name is called Bruiser bot
 <23:51:15> "Trasgress": After you use it it summons a bot and gives you a reactive abilkity that has a 30s cd
@@ -63,7 +68,7 @@ local _ = _
 local MoO = {}
 local addon = MoO
 
-local sVersion = "7.1.15.8"
+local sVersion = "8.1.1.1"
 
 local function hexToCColor(color, a)
 	if not a then a = 1 end
@@ -79,6 +84,25 @@ local tColor = {
 	red = hexToCColor("c6002a"),
 	green = hexToCColor("01a825"),
 	blue = hexToCColor("00b0d8"),
+}
+
+-- we keep track of ignored spells instead of looking at what we want to track because it is faster to do a table lookup than to call GameLib.GetSpell twice for every combatlog event
+local ignoredSpellIds = {
+	-- dashes
+	[25293] = true,
+	[25294] = true,
+	[25295] = true,
+	[25296] = true,
+
+	[42683] = true, -- pounce
+
+	[44602] = true, -- razor storm
+	[59941] = true, -- reaver
+	[39941] = true, -- reaver
+
+	[1316] = true, -- sprint
+
+	[54071] = true, -- slow it down - whatever that is
 }
 
 local tPartyLASInterrupts = {} -- for some reason this has to be here and not inside our addons metatable, else the widget does no update for groups created by OnRestore -- should probably figure out why at some point
@@ -219,6 +243,7 @@ end
 -----------------------------------------------------------------------------------------------
 
 function addon:TrackCooldown(unitCaster, splCallingSpell)
+	if not unitCaster:IsInYourGroup() or ignoredSpellIds[splCallingSpell:GetId()] then return end
 	local sPlayerName = unitCaster:GetName()
 	local nSpellId = splCallingSpell:GetId()
 	if not self.tCooldowns[sPlayerName] then self.tCooldowns[sPlayerName] = {} end
@@ -265,6 +290,7 @@ end
 
 local function updatePartyLASInterruptsFromCombatLogEvent(unitCaster, splCallingSpell)
 	if not unitCaster:IsInYourGroup() then return end -- not a group member -> we don't care
+	if ignoredSpellIds[splCallingSpell:GetId()] then return end -- that spellId is something we don't want to track
 	local sSourceName = unitCaster:GetName()
 	if tPartyLASInterrupts[sSourceName] then
 		for nIndex, nSpellId in ipairs(tPartyLASInterrupts[sSourceName]) do
@@ -304,7 +330,7 @@ end
 
 -- /eval Apollo.SetConsoleVariable("cmbtlog.disableModifyInterruptArmor", true)
 function addon:OnCombatLogModifyInterruptArmor(tEventArgs)
-	-- this does not fire for other units as of winter beta 4 so we sync
+	-- this does not fire for other units as of UI patch 2 so we sync
 end
 
 function addon:OnCombatLogInterrupted(tEventArgs)
@@ -704,15 +730,64 @@ end
 function addon:OnHelpButton(wHandler)
 	if not self.wHelp then
 		self.wHelp = Apollo.LoadForm("MoO.xml", "HelpFrame", nil, self)
-		local wTextContainer = self.wHelp:FindChild("TextContainer")
-		wTextContainer:SetText("HELP! - going to fill this out eventually.")
 	end
+	local wTextContainer = self.wHelp:FindChild("TextContainerML")
+
+	-- colors is FF < full alpha then FF0000 < red
+	local sHelp = "\
+	<T Font='CRB_InterfaceSmall' TextColor='FFC0C0C0'>Note: this is a resizeable and moveable window! (Scroll wheel to scroll inside it works too)\n</T> \
+	<T Font='CRB_InterfaceLarge_B' TextColor='FFFF0000'>Known issues, caveats, features:</T> \
+		<T Font='CRB_InterfaceMedium_B' TextColor='FFFFFFFF'> \
+		    ● \"One\" button setup group always gets created small, so you always have to resize it.\
+		    ● Some abilities don't get picked up because events don't fire for them (Carbine has to fix it) for example Arcane Shock (spellslingers).\
+		    ● There might be interrupts I missed, if you think something should be tracked and is not tracked, please report it on curse.\
+		    ● Or there might be abilities that the addon pick up from the combatlog and are not really interrupts. Please report these to me so they can be added to a filter to ignore them.\
+		    ● Reloading the UI wipes all the interrupt data that was gathered from the combatlog. This is working as intended! \
+		    ● Group windows disappear after reloadui if you are not in a group. This is working as intended!\
+		    ● Tracking the cooldown of interrupt abilities from the combat log is not the best way, because there are AMPs or other abilities that might reduce the cooldown of an ability, and there is no way to track that from the combat log. So if you want the most accurate timers you need to have others use the addon too, so the addon can sync the data.\
+		    ● There are some rounding errors with the ability cooldowns that I need to track down making some of the abilities never appear to be off cooldown.\
+		    ● The info text on an interrupt bar can show more than 100% percentage when tracking when an interrupt hit (or interrupt armore reduce occured) during a cast. This issue is due to how the Carbine API return longer elapsed time for casts than the max duration of the cast.\
+		    ● You see someone's interrupt on cooldown but no info text if they interrupted during a cast. This means they did NOT interrupt during a cast. At least not according to the combat log / Carbine API.\
+	\
+	<T Font='CRB_InterfaceLarge_B' TextColor='FF00FF00'>Easiest way to use the addon:</T> \
+		Once you have been in combat for a while ( meaning your group members used their interrupts and actually hit something with it ) you can open up the options with /moo . Then click the \"One\" button setup. This will allow you to create ad hock groups really fast. If your intent is to just track the cooldowns of others not really organize them into groups you can just enter the total amount of interrupts the addon tracked (this info is in the \"One\" button setup dialog window) this will create one group with everyone in it. Remember even tho the layout of a group window gets saved when reloading UI, if you want to use the same group setup again later you might want to save the group setup in the options window.\
+	\
+	<T Font='CRB_InterfaceLarge_B' TextColor='FF00FF00'>Additional usage examples / HowTo:</T> \
+		The way to unlock or show an already locked or hidden group is to unlock all groups from the MoO options with the 'Lock/Unlock all groups' button inside the Miscellaneous options category.\
+		    <T Font='CRB_InterfaceLarge_B' TextColor='FF00FFFF'>Moving players up or down the list inside a group:</T> \
+		        If the little arrows at the right side of the bar don't show up, make sure you hit the Lock/Unlock all groups button in the main options till they do.\
+		    <T Font='CRB_InterfaceLarge_B' TextColor='FF00FFFF'>Adding players to a group:</T> \
+		        Once you have created a group ( or made sure the group you want to add players to is unlocked ) then you can click the 3rd icon from the top left inside the groups window. This will bring up the 'Add member to group' popup where you first need to select the player you want to add to the group, then tick in the abilities you want them to have on the bar inside the group. If you are missing players from the list please make sure that they either have used their interrupts in combat ( they actually hit something with it ) or if they are using the addon then you need to use the 'Request party LAS interrupts' button inside the main MoO options at the 'Miscellaneous options' category. \
+		    <T Font='CRB_InterfaceLarge_B' TextColor='FF00FFFF'>Removing players or abilities from a group:</T> \
+		        Again make sure the group is unlocked. Click the little cogwheel button on the players bar. This will bring up the 'Add member to group:' popup. If you untick all abilities the player will be removed from the list. Obviously you can remove just one or two ability as well.\
+		    <T Font='CRB_InterfaceLarge_B' TextColor='FF00FFFF'>Hiding a group:</T> \
+		        Again make sure the group is unlocked. The top left most button inside the group window will hide the group window. Remember groups you are part of can't be hidden for your own good. \
+				\
+			    However you can still press the 'Delete all groups' button inside the MoO options window inside the 'Delete group' category. However in this case I recommend you tick in the 'Always broadcast cooldowns' check-box in the MoO options window inside the 'Miscellaneous options' category. If you don't tick this in then your group members won't receive cooldown data from you (if you are not in any visible groups on your end).\
+				\
+			    Remember to unhide a group you need to click the 'Lock/Unlock all groups' button in the MoO options window inside the 'Miscellaneous options' category. (you might need to click it multiple times till it becomes unhidden/unlocked).\
+		    <T Font='CRB_InterfaceLarge_B' TextColor='FF00FFFF'>Locking/Unlocking groups:</T> \
+		        You can either lock/unlock all groups at once with the 'Lock/Unlock all groups' button in the MoO options window inside the 'Miscelleneous options' category. Or you can lock a single gorup by clicking the 2nd top left most icon in the group window, assuming the window is unlocked at that moment. \
+				\
+			    Remember to unhide a group you need to click the 'Lock/Unlock all groups' button in the MoO options window inside the 'Miscellaneous options' category. (you might need to click it multiple times till it becomes unhidden/unlocked).\
+		    <T Font='CRB_InterfaceLarge_B' TextColor='FF00FFFF'>Sending group setups:</T> \
+		        You can send your own group setup to your party members (group/raid) with the 'Send groups to party' button in the MoO options window inside the 'Miscellaneous options' category. You might want to let them know you are doing this and that they should save the group setup to the database once they are done repositioning and resizing the groups so in case you have to send an adjusted group setup to them the groups will pop up at the saved positions not at the default positions, allowing them to lot quicker adjust to the potential changes.\
+		    <T Font='CRB_InterfaceLarge_B' TextColor='FFFFFF00'>The group setup database and receiving setups:</T> \
+		        When you receive a group setup sync the first time all the groups will be on top of each other and you need to move / resize them the way you want them to be. Now if you were to receive another sync without saving this setup, the newly synced setup would be at the default position again and you'd have to set it all up again. To avoid this make sure to save the group setup right after you are done setting it up ( with the same name it was synced to you ), this way when you receive a changed group setup with that name the addon will try to load the group window positions the best it can from the database, making your life that much easier when it comes to adjusting for the changes made to the setup.\
+				\
+		        Worth mentioning that groups need to be saved in the main MoO options inside the 'Save/Load group setup to database' category. There is no automatic naming and saving, you have to do it yourself if you want to use a group setup later or you want to make sure that the positions of the group windows will be at the same place again when you receive the same sync again.\
+				\
+		<T Font='CRB_InterfaceSmall' TextColor='FFC0C0C0'>Note: this is a resizeable and moveable window! (Scroll wheel to scroll inside it works too)\n</T> \
+		</T>"
+	wTextContainer:SetText(sHelp)
 	self.wHelp:Show(true)
 end
 
 function addon:Options()
 	if not self.wOptions then
 		self.wOptions = Apollo.LoadForm("MoO.xml", "OptionsContainer", nil, self)
+
+		self.wOptions:FindChild("VersionNumberDisplay"):SetText(("%s: %s"):format("Version", sVersion))
 
 		local wDeleteGroupSelectorContainer = Apollo.LoadForm("MoO.xml", "DropDownWidget", self.wOptions:FindChild("DeleteGroupSelectorContainer"), self)
 		local wCopyGroupSelectorContainer = Apollo.LoadForm("MoO.xml", "DropDownWidget", self.wOptions:FindChild("CopyGroupSelectorContainer"), self)
@@ -1064,14 +1139,16 @@ function addon:OnOneSecTimer()
 				for nBarIndex, tBar in ipairs(self.tGroups[sGroupName].BarContainers[nMemberIndexInGroup].bars) do
 					-- need to make sure the spellId is the actual spell we have on our bars because if an ability is added to the bars from the combatlog then that spellIds spellObject may not provide a cooldown
 					local bCorrectSpellId
-					for nIndex, nSpellId in ipairs(self.tLastLASInterrupts) do
-						if nSpellId == tBar.nSpellId then
-							bCorrectSpellId = true
-						end
-						if not bCorrectSpellId then
-							if GameLib.GetSpell(nSpellId):GetName() == GameLib.GetSpell(tBar.nSpellId):GetName() then
-								tBar.nSpellId = nSpellId
-								break
+					if self.tLastLASInterrupts then
+						for nIndex, nSpellId in ipairs(self.tLastLASInterrupts) do
+							if nSpellId == tBar.nSpellId then
+								bCorrectSpellId = true
+							end
+							if not bCorrectSpellId then
+								if GameLib.GetSpell(nSpellId):GetName() == GameLib.GetSpell(tBar.nSpellId):GetName() then
+									tBar.nSpellId = nSpellId
+									break
+								end
 							end
 						end
 					end
@@ -1118,14 +1195,16 @@ function addon:OnOneSecTimer()
 			for nIndex, nSpellId in ipairs(self.tLastLASInterrupts) do
 				if not tBarData[nSpellId] then -- no need to overwrite ability data
 					local spellObject = GameLib.GetSpell(nSpellId)
-					local nCD, nRemainingCD = floor(spellObject:GetCooldownTime()), floor(spellObject:GetCooldownRemaining())
-					if nRemainingCD and nRemainingCD > 0 then
-						if not tBarData[nSpellId] then -- no need to overwrite ability data
-							tBarData[nSpellId] = {self.uPlayer:GetName(), nRemainingCD}
-						end
-					else
-						if not tBarData[nSpellId] then -- no need to overwrite ability data
-							tBarData[nSpellId] = {self.uPlayer:GetName(), nCD}
+					if spellObject then
+						local nCD, nRemainingCD = floor(spellObject:GetCooldownTime()), floor(spellObject:GetCooldownRemaining())
+						if nRemainingCD and nRemainingCD > 0 then
+							if not tBarData[nSpellId] then -- no need to overwrite ability data
+								tBarData[nSpellId] = {self.uPlayer:GetName(), nRemainingCD}
+							end
+						else
+							if not tBarData[nSpellId] then -- no need to overwrite ability data
+								tBarData[nSpellId] = {self.uPlayer:GetName(), nCD}
+							end
 						end
 					end
 				end
@@ -1460,7 +1539,11 @@ function addon:GenerateGroupsFromOneButtonWindow(nMembersPerGroup)
 
 	for sMemberName, tInterrupts in pairs(tPartyLASInterrupts) do
 		for nIndex, nSpellId in pairs(tInterrupts) do
-			self:AddToGroup(sGroupName:format(nGroupCounter), sMemberName, nSpellId, self:GetCooldown(nSpellId), false)
+			if self:GetCooldown(nSpellId) and self:GetCooldown(nSpellId) > 0 then
+				self:AddToGroup(sGroupName:format(nGroupCounter), sMemberName, nSpellId, self:GetCooldown(nSpellId), false)
+			else
+				D("no cooldown for ".. nSpellId.. " " .. GameLib.GetSpell(nSpellId):GetName() .. " - " .. sMemberName)
+			end
 		end
 		nGroupMemberCounter = nGroupMemberCounter + 1
 		if nGroupMemberCounter == nMembersPerGroup then
@@ -1482,12 +1565,16 @@ function addon:OnOneButtonSetup()
 	for sMemberName, tInterrupts in pairs(tPartyLASInterrupts) do
 		nMembers = nMembers + 1
 		for nIndex, nSpellId in pairs(tInterrupts) do -- pairs here because I think I'll switch to non indexed table at some point so this makes it future proof
-			nNumberOfInterrupts = nNumberOfInterrupts + 1
-			nTotalInterruptCD = nTotalInterruptCD + self:GetCooldown(nSpellId)
+			if self:GetCooldown(nSpellId) and self:GetCooldown(nSpellId) > 0 then
+				nNumberOfInterrupts = nNumberOfInterrupts + 1
+				nTotalInterruptCD = nTotalInterruptCD + self:GetCooldown(nSpellId)
+			else
+				D("no cooldown for ".. nSpellId.. " " .. GameLib.GetSpell(nSpellId):GetName() .. " - " .. sMemberName)
+			end
 		end
 	end
 	local nAvgInterruptCD = nTotalInterruptCD / nNumberOfInterrupts
-	local sText = 'You currently have data from %d group members (A total of %d interrupts with an average cooldown of %.2f seconds). If these numbers seem low and you know that there are more people in the raid using the addon then press the "Request Party LAS Interrupts" button in the main config window. Another way to increase this number is have your raid members use their interrupts so the addon can track them. Rember that only interrupts that hit something can be tracked and that reloading the UI wipes this database.'
+	local sText = 'You currently have data from %d group members (A total of %d interrupts with an average cooldown of %.2f seconds). If these numbers seem low and you know that there are more people in the raid using the addon then press the "Request Party LAS Interrupts" button in the main options window. Another way to increase this number is have your raid members use their interrupts so the addon can track them. Rember that only interrupts that hit something can be tracked and that reloading the UI wipes this database.'
 	wDataText:SetText(sText:format(nMembers, nNumberOfInterrupts, nAvgInterruptCD))
 	self.wOneButton:FindChild("GroupSizeInputField"):SetText("")
 	self.wOneButton:FindChild("GroupSizeInputField"):InsertText("Type here the number of members for a group.")
