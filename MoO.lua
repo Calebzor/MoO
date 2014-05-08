@@ -68,7 +68,7 @@ local _ = _
 local MoO = {}
 local addon = MoO
 
-local sVersion = "8.1.1.3"
+local sVersion = "8.1.1.4"
 
 local function hexToCColor(color, a)
 	if not a then a = 1 end
@@ -624,7 +624,7 @@ function addon:RedrawGroup(sGroupName, tAnchorOffsets)
 end
 
 function addon:OnGroupResize(wHandler, wControl)
-	if wControl:GetData() and wControl:GetData().sGroupName then
+	if wHandler == wControl and wControl:GetData() and wControl:GetData().sGroupName then
 		self:RedrawGroup(wControl:GetData().sGroupName)
 	end
 end
