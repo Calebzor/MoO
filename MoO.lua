@@ -68,7 +68,7 @@ local _ = _
 local MoO = {}
 local addon = MoO
 
-local sVersion = "8.1.1.4"
+local sVersion = "8.1.1.5"
 
 local function hexToCColor(color, a)
 	if not a then a = 1 end
@@ -1229,6 +1229,7 @@ end
 -----------------------------------------------------------------------------------------------
 
 function addon:SetGroupChannel(sGroupLeader)
+	if not sGroupLeader then return end
 	local sNewChannel = string.format("Moo_%s%s", sGroupLeader, string.reverse(sGroupLeader))
 
 	if self.sChannelName ~= sNewChannel then
