@@ -68,7 +68,7 @@ local _ = _
 local MoO = {}
 local addon = MoO
 
-local sVersion = "8.1.1.5"
+local sVersion = "8.1.1.6"
 
 local function hexToCColor(color, a)
 	if not a then a = 1 end
@@ -150,7 +150,9 @@ end
 -- MoO OnLoad
 -----------------------------------------------------------------------------------------------
 function addon:OnLoad()
-	Apollo.RegisterSlashCommand("moo", "OnSlashCommand", self)
+	Apollo.RegisterEventHandler("MoO_OnSlashCommand", "MoO_OnSlashCommand", self)
+	Apollo.RegisterEventHandler("InterfaceMenuListHasLoaded", "OnInterfaceMenuListHasLoaded", self)
+	Apollo.RegisterSlashCommand("moo", "MoO_OnSlashCommand", self)
 
 	Apollo.RegisterEventHandler("Group_Join", "OnGroupJoin", self)
 	Apollo.RegisterEventHandler("Group_Left", "OnGroupLeft", self)
@@ -185,6 +187,10 @@ function addon:DelayedInit()
 	else
 		Apollo.CreateTimer("DelayedInit", 1, false)
 	end
+end
+
+function addon:OnInterfaceMenuListHasLoaded()
+	Event_FireGenericEvent("InterfaceMenuList_NewAddOn", "MoO", { "MoO_OnSlashCommand", "", ""})
 end
 
 local function getFirstIndexOfIndexedTablqe(t)
@@ -814,7 +820,7 @@ function addon:Options()
 	self.wOptions:Show(true)
 end
 
-function addon:OnSlashCommand(_, input)
+function addon:MoO_OnSlashCommand(_, input)
 	self:Options() -- well no other input for now so might as well just open the config on /moo
 	--if input then
 	--	if input:find("config") then
@@ -1698,7 +1704,7 @@ function addon:OnRestore(eLevel, tDB)
 	Apollo.RegisterTimerHandler("DelayedInit", "DelayedInit", self)
 
 	-- XXX debug
-	--self:OnSlashCommand(_, "config")
+	--self:MoO_OnSlashCommand(_, "config")
 end
 
 function addon:OnSave(eLevel)

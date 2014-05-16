@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<Addon Author="Caleb" APIVersion="8" Name="MoO" Description="An addon to help set up interrupt rotations to maximize your groups Moment of Opportunity uptime. Slash command: /moo" Version="8.1.1.4">
+<Addon Author="Caleb" APIVersion="8" Name="MoO" Description="An addon to help set up interrupt rotations to maximize your groups Moment of Opportunity uptime. Slash command: /moo" Version="8.1.1.6">
     <Script Name="MoO.lua"/>
     <Form Name="MoO.xml"/>
 </Addon>
+
+
 
 
 
